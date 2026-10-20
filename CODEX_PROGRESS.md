@@ -27,7 +27,8 @@ dotnet build GameTrainer.sln -c Release -m:1
 | UI 截图 | `temp/ui-shot/` 9 张（主窗 4 张含空状态 + 设置页 5 分类），已逐张查看 |
 | 对比度 | `python tools/check-contrast.py` → exit 0，28 项门槛全过，0 失败 |
 | 材质 | build 26300 上 `material.applied = True`（Acrylic + 客户区 frame + 系统圆角） |
-| 本地预览包 | `temp/preview/GameTrainer-0.1.0-Lite-preview.zip`，142,980 字节，SHA256 `38A5A53C7825C7083B2211684C69358799B82C3269C1837C6D793819B421C939` |
+| 本地预览包 | `temp/preview/GameTrainer-0.1.0-Lite-preview.zip`，143,307 字节，SHA256 `811998BFDB97844A50DBCA89AE4BB9071A105B4F67CC36A76F1480EC6B5F2C8C` |
+| 启动方式 | `WinExe`；无参数 → GUI 常驻（实测 4 秒后仍存活，窗口标题正确）；`profiles` 等命令 stdout 正常 |
 | 业务回归 | 附加 / AOB 唯一 / dry-run / 真实写入 / `--by-profile` 还原，全部实测通过 |
 | 线上 | 无。未建 GitHub 仓库、未推送、未发布 |
 
@@ -69,8 +70,9 @@ build/package.ps1 -Channel Lite -PreviewOnly         → 142,980 字节
 1. **工程骨架**：`Directory.Build.props` 作为版本唯一来源并把构建输出重定向到 `temp/`；新增 `GameTrainer.sln`、`.gitignore`、`build/package.ps1`、`tools/check-contrast.py`、`README.md`、本文件。
 2. **版本贯通**：`Directory.Build.props` → 程序集 `AssetVersion/FileVersion/InformationalVersion` → `AppVersion.Display` → 设置页「关于」。实测 `ProductVersion = 0.1.0`。
 3. **UI 重做**：色值取自 DisplayControlLab `design-review/v3` 截图像素采样（`#3D5DD8` 主色 / `#F5F6FA` 页底 / `#EEF1F6` 侧栏），布局采用「顶栏 + 左侧栏 + 卡片内容区 + 状态栏」。新增 `UI/Paint.cs`、`UI/ProfileList.cs`、`UI/PatchRow.cs`、`UI/RoundedField.cs`。
-4. **DWM 材质**：新增 `Native/WindowMaterial.cs`，按 windows-native 基线实现 backdrop + `DwmExtendFrameIntoClientArea` + 圆角，任一步失败撤销 backdrop 并整体回退。
+4. **DWM 材质**：新增 `Native/WindowMaterial.cs`，只保留「标题栏 Acrylic + 系统圆角」，**不做全客户区 frame 扩展**（原因见下方缺陷表「整窗发白」一行）。
 5. **WCAG 核算**：`tools/check-contrast.py` 从 `Tokens.cs` 解析颜色自动验算，禁用态按 WCAG 1.4.3/1.4.11 豁免。
+6. **启动方式**：程序改为 `WinExe`（GUI 子系统），无参数双击直接开窗口；命令行模式通过 `AttachConsole(ATTACH_PARENT_PROCESS)` 保留 stdout。
 
 ## 本轮修复的真实缺陷（都有截图或日志佐证）
 
@@ -84,6 +86,17 @@ build/package.ps1 -Channel Lite -PreviewOnly         → 142,980 字节
 | 包内 `profiles/` 为空 | `Copy-Item -Destination <已存在目录>` 会再套一层 | 清空后按 `*` 展开复制 |
 | 开关关闭态对比度 2.98 / 2.84 | `BorderControl #8391A0` 在浅底不足 3:1 | 改 `#7B8998`（白底 3.58 / 页底 3.31 / 侧栏 3.16） |
 | 预览包带 `.pdb` | publish 默认输出符号 | 打包脚本删除 `*.pdb` |
+| **双击秒闪退** | `OutputType=Exe`（控制台子系统）+ 无参数时 `PrintHelp(); return 0` | 改 `WinExe`；无参数直接 `GuiForm.Run`；命令行经 `AttachConsole` 保留输出 |
+| **整窗发白、文字看不清** | `DwmExtendFrameIntoClientArea` 全客户区扩展。WinForms 无透明 composition target，DWM 在不透明绘制之上再混 Acrylic，正文对比度塌陷 | 取消客户区扩展，只保留标题栏材质 + 系统圆角 |
+
+### 关于全窗毛玻璃的能力边界
+
+`ui-design.md` 描述的是 WPF 路径：`AllowsTransparency` / 透明 composition target + DWM frame 扩展。
+WinForms 用 GDI 绘制不透明客户区，直接套同一套调用会得到「整窗发白」，实测证据在
+`temp/ui-shot/live-run.png`（修复前）与 `live-run3.png`（修复后）。
+
+要真正实现 WinForms 全窗毛玻璃，需要改用 layered window 或换框架，不是调参能解决的。
+当前选择是保证可读性优先：材质只作用于标题栏。
 
 ## 验证矩阵
 

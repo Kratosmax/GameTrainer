@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using GameTrainer.Core;
 using GameTrainer.Engine;
@@ -11,18 +12,73 @@ internal static class Program
 {
     private static string _skillRoot;
 
+    // ---- 控制台附着 ----
+    // 程序是 WinExe（GUI 子系统），双击不会闪黑框；但从命令行调用时默认拿不到控制台，
+    // stdout 会丢失。这里在检测到父进程是控制台时主动附着上去，
+    // 让 `GameTrainer profiles` 之类命令照常输出。
+    private const int ATTACH_PARENT_PROCESS = -1;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AttachConsole(int dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AllocConsole();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool FreeConsole();
+
+    /// <summary>附着到调用方控制台。成功返回 true；双击启动时返回 false 且不创建窗口。</summary>
+    private static bool TryAttachConsole()
+    {
+        if (AttachConsole(ATTACH_PARENT_PROCESS))
+        {
+            // 附着后 Console 流对象仍需重建，否则仍指向空设备
+            var stdout = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
+            var stderr = new StreamWriter(Console.OpenStandardError(), new UTF8Encoding(false)) { AutoFlush = true };
+            Console.SetOut(stdout);
+            Console.SetError(stderr);
+            return true;
+        }
+        return false;
+    }
+
     private static int Main(string[] args)
     {
-        Console.OutputEncoding = Encoding.UTF8;
-        Console.InputEncoding = Encoding.UTF8;
-
         _skillRoot = ResolveSkillRoot();
 
+        // 双击（无参数）直接进 GUI，不碰控制台，避免闪黑框
+        if (args.Length == 0)
+            return GuiForm.Run(_skillRoot);
+
+        // 有参数即命令行用法，需要真实控制台
+        bool attached = TryAttachConsole();
+        if (attached)
+        {
+            Console.OutputEncoding = new UTF8Encoding(false);
+            Console.InputEncoding = Encoding.UTF8;
+        }
+
+        try
+        {
+            return RunWithArgs(args, attached);
+        }
+        finally
+        {
+            // 附着来的控制台不能关掉（属于调用方），只刷新缓冲
+            if (attached)
+            {
+                try { Console.Out.Flush(); } catch { /* 调用方已退出 */ }
+            }
+        }
+    }
+
+    private static int RunWithArgs(string[] args, bool attached)
+    {
         // --background：由开机自启注册项传入，启动后直接进托盘、不抢焦点
-        if (args.Length > 0 && args[0] == "--background")
+        if (args[0] == "--background")
             return GuiForm.Run(_skillRoot, startBackground: true);
 
-        if (args.Length == 0 || args[0] is "-h" or "--help" or "help")
+        if (args[0] is "-h" or "--help" or "help")
         {
             PrintHelp();
             return 0;
@@ -34,11 +90,24 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[错误] {ex.Message}");
+            WriteError($"[错误] {ex.Message}");
             if (Environment.GetEnvironmentVariable("GT_DEBUG") == "1")
-                Console.Error.WriteLine(ex.StackTrace);
+                WriteError(ex.StackTrace);
             return 1;
         }
+    }
+
+    /// <summary>
+    /// 写错误。无控制台时（例如从快捷方式带参数启动）用消息框兜底，
+    /// 不能让错误凭空消失。
+    /// </summary>
+    private static void WriteError(string message)
+    {
+        if (Console.IsErrorRedirected || Console.Error != null)
+        {
+            try { Console.Error.WriteLine(message); return; } catch { /* 无控制台 */ }
+        }
+        MessageBox.Show(message, "GameTrainer", MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 
     /// <summary>定位 skill 根目录：优先 exe 所在目录上溯，再回退到环境变量。</summary>

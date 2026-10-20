@@ -98,17 +98,16 @@ internal static class WindowMaterial
         if (hrBackdrop < 0)
             return Result.Fallback($"DwmSetWindowAttribute(SYSTEMBACKDROP_TYPE) HRESULT=0x{hrBackdrop:X8}");
 
-        // 2) 把 frame 延伸到整个客户区，否则材质只覆盖标题栏
-        var margins = new MARGINS { cxLeftWidth = -1, cxRightWidth = -1, cyTopHeight = -1, cyBottomHeight = -1 };
-        int hrFrame = DwmExtendFrameIntoClientArea(hwnd, ref margins);
-        if (hrFrame < 0)
-        {
-            // 关键：backdrop 已生效但客户区没延伸，会得到"半透明标题栏 + 不透明正文"的混合态。
-            // 必须撤销 backdrop，整体走回退。
-            int none = DWMSBT_NONE;
-            DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, ref none, sizeof(int));
-            return Result.Fallback($"DwmExtendFrameIntoClientArea HRESULT=0x{hrFrame:X8}");
-        }
+        // 2) 不做 DwmExtendFrameIntoClientArea 全客户区扩展。
+        //
+        // 实测结论（2026-10-21，build 26300）：WinForms 窗口没有 WPF 那种
+        // 透明 composition target，客户区由 GDI 不透明绘制。一旦把 DWM frame
+        // 延伸到整个客户区，DWM 会在绘制结果之上再叠一层 Acrylic 混合，
+        // 表现为整窗发白、正文对比度塌到看不清（截图 temp/ui-shot/live-run.png）。
+        //
+        // 因此 WinForms 下只保留"标题栏材质 + 系统圆角"，客户区维持不透明。
+        // 这是能力边界，不是取舍：想真正做全窗毛玻璃必须换成支持
+        // 透明合成目标的框架或自绘 layered window。
 
         // 3) 系统圆角。失败不致命——圆角只是装饰，不影响可读性，降级为无圆角继续。
         int corner = DWMWCP_ROUND;
@@ -121,10 +120,10 @@ internal static class WindowMaterial
         DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref lightMode, sizeof(int));
 
         string detail = cornerOk
-            ? "backdrop=Acrylic, frame=客户区, corner=系统圆角"
-            : $"backdrop=Acrylic, frame=客户区, corner 降级 HRESULT=0x{hrCorner:X8}";
+            ? "backdrop=Acrylic(标题栏), frame=未扩展(WinForms 客户区不透明), corner=系统圆角"
+            : $"backdrop=Acrylic(标题栏), frame=未扩展, corner 降级 HRESULT=0x{hrCorner:X8}";
 
-        return new Result(true, true, true, cornerOk, detail);
+        return new Result(true, true, false, cornerOk, detail);
     }
 
     /// <summary>

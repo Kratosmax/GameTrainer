@@ -143,6 +143,9 @@ powershell -File build/package.ps1
 
 - 仅 Windows x64。`ApplicationManifest` 为 `asInvoker`，不默认要求管理员。
 - DWM 材质需 Windows 11 build 22621+；更低版本自动回退为不透明表面，功能不受影响。
+  当前材质只作用于标题栏（系统圆角 + Acrylic）：WinForms 用 GDI 绘制不透明客户区，
+  若把 DWM frame 扩展到整个客户区，DWM 会在绘制结果之上再叠一层材质，导致整窗发白、
+  正文不可读。这是框架能力边界，见 `CODEX_PROGRESS.md` 的「关于全窗毛玻璃的能力边界」。
 
 ---
 
