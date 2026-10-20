@@ -1,0 +1,15 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+temp/
+artifacts/
+
+# 运行时数据：不随源码分发
+audit.log
+snapshots/
+dist/
+
+# skill 本体在 ~/.agents/skills/game-trainer，不归本工程
+SKILL.md

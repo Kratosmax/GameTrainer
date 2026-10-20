@@ -1,0 +1,16 @@
+<Project>
+  <PropertyGroup>
+    <!-- 版本唯一来源。标签、包名、显示版本、程序集版本全部从这里推导。 -->
+    <GameTrainerVersion>0.1.0</GameTrainerVersion>
+    <Version>$(GameTrainerVersion)</Version>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <!-- 构建中间产物与输出统一放项目 temp，不混入源码目录 -->
+    <BaseOutputPath>$(MSBuildThisFileDirectory)temp\build\$(MSBuildProjectName)\</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)temp\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+    <MSBuildProjectExtensionsPath>$(BaseIntermediateOutputPath)</MSBuildProjectExtensionsPath>
+    <DefaultItemExcludes>$(DefaultItemExcludes);$(MSBuildProjectDirectory)\bin\**;$(MSBuildProjectDirectory)\obj\**</DefaultItemExcludes>
+  </PropertyGroup>
+</Project>

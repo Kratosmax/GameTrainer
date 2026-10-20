@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>GameTrainer</AssemblyName>
+    <RootNamespace>GameTrainer</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- 版本由 Directory.Build.props 的 GameTrainerVersion 统一注入，不在项目里写死 -->
+    <AssemblyVersion>$(GameTrainerVersion).0</AssemblyVersion>
+    <FileVersion>$(GameTrainerVersion).0</FileVersion>
+    <InformationalVersion>$(GameTrainerVersion)</InformationalVersion>
+    <Product>GameTrainer</Product>
+    <Description>单机游戏内存 / 存档修改器</Description>
+  </PropertyGroup>
+
+</Project>

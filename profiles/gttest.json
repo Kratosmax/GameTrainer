@@ -1,0 +1,87 @@
+{
+  "id": "gttest",
+  "name": "GameTrainer 靶进程（自测用）",
+  "exe": "GtTestTarget.exe",
+  "mode": "allow",
+
+  "anticheat": {
+    "modules": []
+  },
+
+  "rollback": {
+    "maxBytes": 64,
+    "requireSnapshot": true
+  },
+
+  "save": {
+    "path": "%TEMP%\\gt_save.txt",
+    "backupDir": "snapshots",
+    "editMode": "allow_edit"
+  },
+
+  "patches": [
+    {
+      "id": "gold",
+      "label": "金币=99999",
+      "kind": "memory",
+      "freeze": false,
+      "writes": [
+        {
+          "aob": "00 00 60 40 00 00 00 00 E8 03 00 00 00 00 00 00 DE AD BE EF 12 34 56 78",
+          "offsets": ["-0x18"],
+          "type": "double",
+          "value": "99999",
+          "expectBefore": "100",
+          "range": [0, 1000000]
+        }
+      ]
+    },
+    {
+      "id": "level",
+      "label": "等级=99",
+      "kind": "memory",
+      "freeze": false,
+      "writes": [
+        {
+          "aob": "00 00 60 40 00 00 00 00 E8 03 00 00 00 00 00 00 DE AD BE EF 12 34 56 78",
+          "offsets": ["-0x10"],
+          "type": "int32",
+          "value": "99",
+          "range": [1, 999]
+        }
+      ]
+    },
+    {
+      "id": "health_lock",
+      "label": "生命锁定=100",
+      "kind": "memory",
+      "freeze": true,
+      "freezeIntervalMs": 200,
+      "writes": [
+        {
+          "aob": "00 00 60 40 00 00 00 00 E8 03 00 00 00 00 00 00 DE AD BE EF 12 34 56 78",
+          "offsets": ["-0xC"],
+          "type": "int32",
+          "value": "100",
+          "range": [0, 100]
+        }
+      ]
+    },
+    {
+      "id": "save_gold",
+      "label": "存档金币=55555",
+      "kind": "save",
+      "freeze": false,
+      "saveWrite": {
+        "file": "",
+        "compression": "none",
+        "edits": [
+          {
+            "pattern": "\"gold\":\\s*[0-9.]+",
+            "replacement": "\"gold\": 55555"
+          }
+        ]
+      }
+    }
+  ]
+}
