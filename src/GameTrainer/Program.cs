@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using GameTrainer.Adapter;
 using GameTrainer.Core;
 using GameTrainer.Engine;
 using GameTrainer.Memory;
@@ -148,6 +149,9 @@ internal static class Program
             case "jsdb": return CmdJsDb(a);
             case "jsset": return CmdJsSet(a);
             case "jsapply": return CmdJsApply(a);
+            case "probe": return CmdProbe(a);
+            case "adapters": return CmdAdapters();
+            case "sem": return CmdSemantic(a);
             case "jsobj": return CmdJsObj(a);
             case "jssetvar": return CmdJsSetVar(a);
             case "gui": return GuiForm.Run(_skillRoot);
@@ -423,6 +427,192 @@ internal static class Program
             Console.WriteLine(cdp.Evaluate(script, awaitPromise: true, timeoutMs: 30000) ?? "(无结果)");
             if (dryRun) Console.WriteLine("（dry-run：未写入）");
             return 0;
+        }
+        catch (Exception ex)
+        {
+            WriteError("[错误] " + ex.Message);
+            return 1;
+        }
+    }
+
+    // ---------------- 适配包（Game Adapter Pack）----------------
+
+    /// <summary>
+    /// probe &lt;port&gt; [--save &lt;gameId&gt; &lt;name&gt; &lt;exe&gt;] [titleFilter]
+    /// 对目标游戏执行只读探测，输出报告；带 --save 时落盘为适配包骨架。
+    /// </summary>
+    private static int CmdProbe(string[] a)
+    {
+        if (a.Length < 2 || !int.TryParse(a[1], out int port))
+        {
+            Console.Error.WriteLine("用法: probe <port> [--save <gameId> <name> <exe>] [titleFilter]");
+            return 2;
+        }
+
+        string saveId = null, saveName = null, saveExe = null;
+        string titleFilter = null;
+        for (int i = 2; i < a.Length; i++)
+        {
+            if (a[i] == "--save" && i + 3 < a.Length)
+            {
+                saveId = a[++i]; saveName = a[++i]; saveExe = a[++i];
+            }
+            else titleFilter = a[i];
+        }
+
+        try
+        {
+            var report = ProbeEngine.Probe(port, titleFilter, line => Console.WriteLine(line));
+
+            Console.WriteLine();
+            Console.WriteLine("================ 探测报告 ================");
+            Console.WriteLine($"引擎      : {report.DetectedEngine}");
+            Console.WriteLine($"浏览器    : {report.Browser}");
+            Console.WriteLine($"目标页面  : {report.TargetTitle}");
+            Console.WriteLine($"主存储    : {report.LocalStorageDb ?? "(未发现)"}");
+
+            var withVars = report.Objects.Where(o => o.Vars.Count > 0).ToList();
+            Console.WriteLine($"对象类    : {report.Objects.Count} 个有实例，其中 {withVars.Count} 个带变量");
+
+            if (report.Bindings.Count > 0)
+            {
+                Console.WriteLine();
+                Console.WriteLine("语义映射建议:");
+                foreach (var b in report.Bindings)
+                {
+                    string where = b.Kind == "instance_var"
+                        ? $"{b.ObjectName}.{b.VarName}"
+                        : $"IndexedDB[{b.StorageKey}]";
+                    Console.WriteLine($"  {Semantics.Display(b.Semantic),-8} {b.Semantic,-16} → {where,-28} {(b.Realtime ? "实时" : "需重载")}");
+                    Console.WriteLine($"           {b.Evidence}");
+                }
+            }
+
+            if (report.Warnings.Count > 0)
+            {
+                Console.WriteLine();
+                Console.WriteLine("警告:");
+                foreach (string w in report.Warnings) Console.WriteLine("  ! " + w);
+            }
+
+            if (saveId != null)
+            {
+                var adapter = ProbeEngine.ToAdapter(report, saveId, saveName, saveExe);
+                string dir = Path.Combine(_skillRoot, "adapters", saveId);
+                string path = Path.Combine(dir, "adapter.json");
+                adapter.Save(path);
+                Console.WriteLine();
+                Console.WriteLine($"适配包骨架已写入: {path}");
+                Console.WriteLine("注意：自动生成的绑定未经实测，range 与正确性需人工确认后再使用。");
+            }
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            WriteError("[错误] " + ex.Message);
+            return 1;
+        }
+    }
+
+    /// <summary>adapters：列出已安装的适配包。</summary>
+    private static int CmdAdapters()
+    {
+        string dir = Path.Combine(_skillRoot, "adapters");
+        if (!Directory.Exists(dir))
+        {
+            Console.WriteLine("还没有安装任何适配包。");
+            Console.WriteLine($"目录: {dir}");
+            Console.WriteLine("用 `probe <port> --save <gameId> <name> <exe>` 生成骨架，再手工确认绑定。");
+            return 0;
+        }
+
+        var files = Directory.GetFiles(dir, "adapter.json", SearchOption.AllDirectories);
+        if (files.Length == 0)
+        {
+            Console.WriteLine("adapters 目录存在但没有任何 adapter.json。");
+            return 0;
+        }
+
+        Console.WriteLine($"已安装 {files.Length} 个适配包:");
+        foreach (string f in files)
+        {
+            try
+            {
+                var ad = GameAdapter.Load(f);
+                int known = ad.Bindings.Count(b => b.Range != null);
+                Console.WriteLine($"  {ad.Id,-16} {ad.Name,-24} 引擎={ad.Engine,-14} exe={ad.Exe}");
+                Console.WriteLine($"      语义绑定 {ad.Bindings.Count} 个（含区间 {known} 个）  {(ad.Mode == "readonly" ? "只读" : ad.Mode)}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  {Path.GetFileName(Path.GetDirectoryName(f)),-16} [无效] {ex.Message.Split('\n')[0]}");
+            }
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// sem &lt;gameId&gt; [read|write &lt;语义&gt; &lt;值&gt;] [--dry-run]
+    /// 按语义读写。read 不带语义则读全部已绑定语义。
+    /// </summary>
+    private static int CmdSemantic(string[] a)
+    {
+        if (a.Length < 2)
+        {
+            Console.Error.WriteLine("用法: sem <gameId> [read [语义] | write <语义> <值>] [--dry-run]");
+            return 2;
+        }
+
+        string path = Path.Combine(_skillRoot, "adapters", a[1], "adapter.json");
+        if (!File.Exists(path))
+        {
+            Console.Error.WriteLine($"找不到适配包: {path}");
+            return 2;
+        }
+
+        GameAdapter adapter;
+        try { adapter = GameAdapter.Load(path); }
+        catch (Exception ex) { WriteError("[错误] " + ex.Message); return 1; }
+
+        string action = a.Length > 2 ? a[2].ToLowerInvariant() : "read";
+        bool dryRun = a.Contains("--dry-run");
+
+        try
+        {
+            if (action == "read")
+            {
+                var wanted = a.Length > 3 && !a[3].StartsWith("-")
+                    ? new List<string> { a[3] }
+                    : adapter.Bindings.Select(b => b.Semantic).ToList();
+
+                Console.WriteLine($"{adapter.Name}  引擎={adapter.Engine}");
+                var results = AdapterRunner.Read(adapter, wanted);
+                foreach (var r in results)
+                {
+                    if (r.Ok)
+                        Console.WriteLine($"  {Semantics.Display(r.Semantic),-8} {r.Semantic,-16} = {r.Value,-12} ({r.Where})");
+                    else
+                        Console.WriteLine($"  {Semantics.Display(r.Semantic),-8} {r.Semantic,-16} ! {r.Error}");
+                }
+                return 0;
+            }
+
+            if (action == "write")
+            {
+                if (a.Length < 5) { Console.Error.WriteLine("用法: sem <gameId> write <语义> <值> [--dry-run]"); return 2; }
+                var r = AdapterRunner.Write(adapter, a[3], a[4], dryRun);
+                if (!r.Ok)
+                {
+                    Console.Error.WriteLine($"[失败] {r.Semantic}: {r.Error}");
+                    return 1;
+                }
+                Console.WriteLine($"{(dryRun ? "(dry-run) " : "")}{Semantics.Display(r.Semantic)}: {r.Before} → {r.After}" +
+                                  (r.Realtime ? "  [实时]" : "  [需重载页面]"));
+                return 0;
+            }
+
+            Console.Error.WriteLine("未知动作: " + action);
+            return 2;
         }
         catch (Exception ex)
         {
@@ -1036,6 +1226,16 @@ js_runtime 后端（NW.js / Electron / CEF）:
   jsset    <port> <db> <key> <value>    直接写 IndexedDB 键值（打印写前值）
   jsapply  <profileId> <patchId> <value> [--dry-run]
                                         按 profile 的 storage 配置写入（带区间校验）
+
+适配包（Game Adapter Pack，推荐用法）:
+  adapters                              列出已安装的适配包
+  probe    <port> [--save <id> <名> <exe>]  只读探测目标游戏，可生成适配包骨架
+  sem      <gameId> read [语义]         按语义读取（health/gold/energy/attack...）
+  sem      <gameId> write <语义> <值>   按语义写入（带区间校验）
+  sem      <gameId> write <语义> <值> --dry-run
+
+  适配包放在 adapters/<gameId>/adapter.json，一个游戏一份。
+  新游戏适配流程见 docs/GAME-ADAPTER-GUIDE.md。
 
 type 可选: byte int16 uint16 int32 uint32 int64 uint64 float double
 

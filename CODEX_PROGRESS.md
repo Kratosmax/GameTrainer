@@ -122,6 +122,51 @@ temp/preview/verify-lite/GameTrainer.exe profiles
 注意：`build/package.ps1` 必须保持 **CRLF + UTF-8 BOM**。PowerShell 5.1 解析 LF 换行的中文脚本会报
 `Unexpected token '}'`，这不是语法错误。编辑该文件后要重新转 CRLF。
 
+## 适配包体系（Game Adapter Pack）
+
+### 设计意图
+
+把「**调查方法**」和「**数值映射**」从结果里分离出来：
+
+- `docs/GAME-ADAPTER-GUIDE.md` — 方法论：新游戏怎么判类型、怎么探测、怎么排错
+- `adapters/<gameId>/adapter.json` — 每游戏一份映射，主程序不认游戏只认语义
+- `Adapter/Semantics.cs` — 通用语义表（health/gold/energy/…）+ 别名匹配
+
+新增游戏**不需要改主程序代码**，只需投一个 adapter.json。
+
+### 命令
+
+```
+adapters                              列出已安装适配包
+probe <port> [--save <id> <名> <exe>] 只读探测 + 生成骨架
+sem <gameId> read [语义]              按语义读
+sem <gameId> write <语义> <值>        按语义写（带区间校验）
+```
+
+### 探测器的 5 个阶段
+
+1. CDP 通道可达性
+2. 框架识别（construct3 / electron / nwjs / generic_js）
+3. 运行时对象模型（对象类 + 实例变量）
+4. 存储（IndexedDB 库与键数）
+5. 语义匹配（按别名表打分）
+
+**探测器只读，不改游戏状态。**
+
+### 已知限制（务必记住）
+
+**探测结果依赖当前场景。** 局内对象（主角、棋盘）只有进入对局才存在；
+在标题页探测会得到「实例数 0」，语义绑定会全部落到 IndexedDB 上——而那通常是错的。
+**必须先进入目标场景再探测。**
+
+实测：Sol Cesto 在标题页探测出 12 个 IndexedDB 绑定，进对局后才发现真正的
+`heros`.vie / .or / .capacite 才是该改的位置。
+
+### 自动生成的绑定不可直接使用
+
+`probe --save` 产出的绑定未经实测，`range` 为空，需要按
+`docs/GAME-ADAPTER-GUIDE.md` 第五节的人工确认清单逐条核对。
+
 ## js_runtime 后端（NW.js / Electron / CEF）
 
 ### 已实现并通过真实游戏验证

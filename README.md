@@ -161,15 +161,25 @@ game-trainer/
 ├── GameTrainer.sln
 ├── README.md
 ├── CODEX_PROGRESS.md           AI 接续索引
+├── docs/
+│   └── GAME-ADAPTER-GUIDE.md   新游戏适配手册（方法论）
+├── adapters/                   适配包：一个游戏一份
+│   └── solcesto/adapter.json
 ├── build/package.ps1           四包构建（当前实现 Full/Lite ZIP）
 ├── tools/check-contrast.py     WCAG 对比度核算
-├── profiles/                   每个游戏一份 json（随包分发）
+├── profiles/                   旧格式 profile（内存后端用）
 ├── src/
 │   ├── GameTrainer/            主程序
 │   │   ├── Program.cs          命令行入口与命令分发
 │   │   ├── GuiForm.cs          主窗口
 │   │   ├── SettingsForm.cs     统一设置页
 │   │   ├── AppVersion.cs       从程序集读版本（真源在 Directory.Build.props）
+│   │   ├── Adapter/            适配包体系
+│   │   │   ├── Semantics.cs      通用语义表与别名匹配
+│   │   │   ├── GameAdapter.cs    适配包模型与校验
+│   │   │   ├── ProbeEngine.cs    只读探测器（5 阶段）
+│   │   │   └── AdapterRunner.cs  按语义读写执行器
+│   │   ├── Js/CdpClient.cs     CDP 客户端（NW.js/Electron/CEF）
 │   │   ├── Core/               热键、单实例、自启、审计、反作弊、激活状态
 │   │   ├── Engine/             PatchEngine / SaveEngine / Scanner
 │   │   ├── Memory/             进程内存、AOB、数值编解码
