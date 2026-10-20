@@ -1,7 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>WinExe</OutputType>
+    <!-- 必须保持 Exe（控制台子系统）：
+         WinExe 虽然双击不闪黑框，但 GUI 子系统进程不被 shell 同步等待，
+         `& GameTrainer.exe profiles > out.txt` 会得到 0 字节（实测）。
+         命令行是本工具的主要用法，不能牺牲。
+         双击闪黑框由 Program.HideOwnConsoleIfLaunchedByExplorer() 处理。 -->
+    <OutputType>Exe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>disable</Nullable>

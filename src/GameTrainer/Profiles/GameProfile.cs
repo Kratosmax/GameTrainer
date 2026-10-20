@@ -27,6 +27,37 @@ internal sealed class GameProfile
 
     /// <summary>存档相关配置（可选）。</summary>
     public SaveSpec Save { get; set; }
+
+    /// <summary>运行时类型（可选）。缺省为内存后端；js_cdp 走 CDP + IndexedDB。</summary>
+    public RuntimeSpec Runtime { get; set; }
+
+    /// <summary>JS 后端的存储配置（可选）。</summary>
+    public StorageSpec Storage { get; set; }
+}
+
+/// <summary>
+/// JS 运行时配置。用于 NW.js / Electron / CEF 类游戏：
+/// 不碰进程内存，通过 CDP 在页面里执行 JS 读写变量，
+/// 因此不受 V8 对象在堆中移动（地址漂移）影响。
+/// </summary>
+internal sealed class RuntimeSpec
+{
+    /// <summary>当前只支持 js_cdp。</summary>
+    public string Type { get; set; } = "js_cdp";
+
+    /// <summary>目标程序启动时使用的 --remote-debugging-port。</summary>
+    public int DebugPort { get; set; } = 9222;
+
+    /// <summary>页面标题过滤，多页面时用来选中游戏页面。</summary>
+    public string TitleFilter { get; set; }
+}
+
+/// <summary>JS 侧存储位置。Construct 3 用 IndexedDB 的 c3-localstorage-&lt;projectId&gt;。</summary>
+internal sealed class StorageSpec
+{
+    public string Backend { get; set; } = "indexeddb";
+    public string Database { get; set; }
+    public string ObjectStore { get; set; } = "keyvaluepairs";
 }
 
 internal sealed class AntiCheatSpec
@@ -47,7 +78,7 @@ internal sealed class PatchDef
 {
     public string Id { get; set; } = "";
     public string Label { get; set; } = "";
-    public string Kind { get; set; } = "memory"; // memory | save
+    public string Kind { get; set; } = "memory"; // memory | save | jsvar
 
     /// <summary>true = 持续锁定（定时重写）；false = 一次性写入。</summary>
     public bool Freeze { get; set; }
@@ -57,6 +88,26 @@ internal sealed class PatchDef
 
     public List<WriteDef> Writes { get; set; } = new();
     public SaveWriteDef SaveWrite { get; set; }
+
+    // ---- jsvar 类型专用（kind = "jsvar"）----
+
+    /// <summary>Storage 型 jsvar：存储键名，例如 Construct3 的 "or"。</summary>
+    public string StorageKey { get; set; }
+
+    /// <summary>实例变量型 jsvar：目标对象类名，例如 "heros"。</summary>
+    public string ObjectName { get; set; }
+
+    /// <summary>实例变量型 jsvar：变量名，例如 "vie"。</summary>
+    public string VarName { get; set; }
+
+    /// <summary>值类型：number | string。默认 number。</summary>
+    public string ValueType { get; set; } = "number";
+
+    /// <summary>允许的数值区间 [min,max]，越界拒绝写入。</summary>
+    public double[] Range { get; set; }
+
+    /// <summary>备注：这个数值在游戏里对应什么。</summary>
+    public string Note { get; set; }
 }
 
 internal sealed class WriteDef
@@ -170,9 +221,31 @@ internal static class ProfileLoader
             {
                 if (patch.SaveWrite == null) errs.Add($"patch {patch.Id}: kind=save 需要 saveWrite");
             }
+            else if (patch.Kind == "jsvar")
+            {
+                // jsvar 走 JS 运行时存储，必须给出键名，且运行时要配 storage。
+                // jsvar 有两种形态：
+                //   A. storage 型：给 storageKey，写 IndexedDB（如局外金币 or）
+                //   B. 实例变量型：给 objectName + varName（如 heros.vie）
+                bool isInstanceVar = !string.IsNullOrWhiteSpace(patch.ObjectName);
+                if (isInstanceVar)
+                {
+                    if (string.IsNullOrWhiteSpace(patch.VarName))
+                        errs.Add($"patch {patch.Id}: 实例变量型需要 varName");
+                }
+                else
+                {
+                    if (string.IsNullOrWhiteSpace(patch.StorageKey))
+                        errs.Add($"patch {patch.Id}: 需要 storageKey 或 objectName+varName");
+                    if (p.Storage == null || string.IsNullOrWhiteSpace(p.Storage.Database))
+                        errs.Add($"patch {patch.Id}: storage 型需要 profile 配置 storage.database");
+                }
+                if (patch.ValueType is not ("number" or "string"))
+                    errs.Add($"patch {patch.Id}: valueType 只能是 number 或 string");
+            }
             else
             {
-                errs.Add($"patch {patch.Id}: 未知 kind {patch.Kind}（仅支持 memory/save）");
+                errs.Add($"patch {patch.Id}: 未知 kind {patch.Kind}（仅支持 memory/save/jsvar）");
             }
         }
 

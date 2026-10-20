@@ -122,6 +122,80 @@ temp/preview/verify-lite/GameTrainer.exe profiles
 注意：`build/package.ps1` 必须保持 **CRLF + UTF-8 BOM**。PowerShell 5.1 解析 LF 换行的中文脚本会报
 `Unexpected token '}'`，这不是语法错误。编辑该文件后要重新转 CRLF。
 
+## js_runtime 后端（NW.js / Electron / CEF）
+
+### 已实现并通过真实游戏验证
+
+目标游戏 Sol Cesto（Construct 3 / NW.js 0.86 / Chromium 123），启动参数 `--remote-debugging-port=9222`。
+
+| 命令 | 作用 |
+|---|---|
+| `CdpClient` | HTTP `/json/list` 发现页面 + WebSocket `Runtime.evaluate` |
+| `jsobj <port> [对象名]` | 列出有实例的对象类；给对象名则打印全部实例变量 |
+| `jsdb <port> [库名]` | 列 IndexedDB 库；给库名则导出全部 object store 键值 |
+| `js <port> "<js>"` | 任意 JS 求值 |
+| `jsset <port> <db> <key> <val>` | 写 IndexedDB，打印写前值 |
+| `jssetvar <port> <对象> <变量> <值>` | 写实例变量（官方 API） |
+| `jsapply <profile> <patch> <值>` | profile 驱动，双模式 + 区间校验 + dry-run |
+
+### 两条写入路径（不可混用）
+
+| 类型 | 目标 | 生效方式 |
+|---|---|---|
+| storage 型（`storageKey`） | IndexedDB `c3-localstorage-<projectId>/keyvaluepairs` | 需 `location.reload()` |
+| 实例变量型（`objectName`+`varName`） | Construct 3 运行时实例 | **实时生效**，界面立即刷新 |
+
+### 关键 API 与陷阱
+
+```javascript
+// 访问运行时
+const rt = self.c3_runtimeInterface._localRuntime;
+const cls = [...rt.GetAllObjectClasses()].find(c => c.GetName() === 'heros');
+const inst = [...cls.GetInstances()][0];
+const names = inst._GetAllInstanceVariableNames();   // 变量名数组
+const idx = names.indexOf('vie');
+inst.GetInstanceVariableValue(idx);
+
+// 参数顺序是 (索引, 值)，不是 (值, 索引)！
+inst.SetInstanceVariableValue(idx, VAL);
+```
+
+**踩过的坑**：
+
+1. `SetInstanceVariableValue(值, 索引)` 参数写反 → 静默失败或 `RangeError: invalid instance variable`。
+   传 `(999, 10)` 时把 999 当索引越界；传 `(10, 8)` 时把 10 当索引、8 当值，读回仍是原值。
+2. `GetInstanceVariableValue('vie')` 传名称返回 0，**必须传索引**。
+3. `jsset` 打印写前值时，`NaN` 会被 JSON 序列化成 `null`，看起来像"原本就是 null"。
+4. 局内对象（`heros` 等）只有进入对局才创建实例；主页阶段实例数为 0。
+5. 二进制解析 leveldb WAL **不可靠**：`or` 键的字节模式会误命中 `mendiantLore` 字符串内部片段，
+   导致读出 473/591 这类与实际无关的值。**优先用 CDP 读，不要手工解 leveldb。**
+
+### Sol Cesto 已确认可改的数值
+
+`heros` 实例变量共 35 个，索引如下：
+
+| 索引 | 变量 | 含义 | 已验证 |
+|---|---|---|---|
+| 5 | `pouvoir_force` | 力量 | ✅ 2→20 |
+| 6 | `pouvoir_magie` | 魔法 | — |
+| 8 | `vie` | 当前血量 | ✅ 5→10 |
+| 9 | `vieMax` | 血量上限 | ✅ 5→10 |
+| 10 | `or` | 局内金币 | ✅ 0→999 |
+| 11 | `or_multiplicateur` | 金币倍率 | — |
+| 12 | `actions` | 行动数 | — |
+| 13 | `capacite_seuilActuel` | 能量累积 | ✅ 0→4 |
+| 14 | `capacite_seuilMax` | 能量累积上限 | — |
+| 15 | `capacite` | 能量（界面数字） | ✅ 1→10 |
+| 17 | `inventaireMax` | 背包容量 | — |
+| 24 | `bouclierActif` | 护盾 | — |
+| 33 | `soinMult` | 治疗倍率 | — |
+
+局外：IndexedDB 的 `or`（✅ 6→999，重载页面生效）、`orEver`。
+
+以上所有写入在重启游戏后**依然保持**，未出现存档损坏。
+
+证据：`temp/validation/solcesto/ingame-vars.txt`
+
 ## 不得破坏的约束
 
 - 写入前四道校验（签名唯一 / 前值 / 区间 / 字节上限）不可放宽。
@@ -140,6 +214,9 @@ temp/preview/verify-lite/GameTrainer.exe profiles
 4. DPI 缺口：当前系统 96 DPI，125% / 150% / 200% 未实测。
 5. 深色系统主题未验证（当前仅浅色设计）。
 6. 未接真实 3A 游戏长周期测试；Unity/IL2CPP、多线程竞态未验证。
+7. **js_runtime 后端仍是 CLI 形态**，GUI 尚未接入；构造对象的实例变量写入未做回滚记录。
+8. **只验证了 Construct 3 一种引擎**，NW.js 原生变量、Electron、一般 JS 游戏未覆盖。
+9. `tools/parse-solcesto-save.py` 是失败路线的遗留脚本，保留仅作参考，结论不可信（见上文第 5 条坑）。
 
 ## 维护
 
