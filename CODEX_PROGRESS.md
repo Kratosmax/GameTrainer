@@ -24,10 +24,10 @@ dotnet build GameTrainer.sln -c Release -m:1
 | 版本 | `0.1.0`，真源 `Directory.Build.props`（实测 `ProductVersion = 0.1.0`） |
 | 分支 / 提交 / remote | `main`，本轮有提交，**无 remote** |
 | 编译 | `dotnet build GameTrainer.sln -c Release -m:1` → 0 警告 0 错误 |
-| UI 截图 | `temp/ui-shot/` 11 张，已逐张查看 |
+| UI 截图 | `temp/ui-shot/` 9 张（主窗 4 张含空状态 + 设置页 5 分类），已逐张查看 |
 | 对比度 | `python tools/check-contrast.py` → exit 0，28 项门槛全过，0 失败 |
 | 材质 | build 26300 上 `material.applied = True`（Acrylic + 客户区 frame + 系统圆角） |
-| 本地预览包 | `temp/preview/GameTrainer-0.1.0-Lite-preview.zip` |
+| 本地预览包 | `temp/preview/GameTrainer-0.1.0-Lite-preview.zip`，142,980 字节，SHA256 `38A5A53C7825C7083B2211684C69358799B82C3269C1837C6D793819B421C939` |
 | 业务回归 | 附加 / AOB 唯一 / dry-run / 真实写入 / `--by-profile` 还原，全部实测通过 |
 | 线上 | 无。未建 GitHub 仓库、未推送、未发布 |
 
@@ -46,6 +46,20 @@ GameTrainer revert gold --by-profile → 按 profile 还原 1 处，99999→100�
 ```
 
 靶进程已用 `Stop-Process` 清理，无残留。
+
+### 干净重建复核（2026-10-21 00:14）
+
+删掉 `temp/build`、`temp/obj`、`temp/ui-shot`、`temp/preview` 后从提交状态重跑，全部通过：
+
+```
+dotnet build GameTrainer.sln -c Release -m:1        → 0 警告 0 错误
+GtUiShot.exe . temp/ui-shot                          → 9 张截图，material.applied = True
+python tools/check-contrast.py                       → exit 0，checks=28 failures=0 exempt=1
+build/package.ps1 -Channel Lite -PreviewOnly         → 142,980 字节
+```
+
+预览包哈希与上一轮不同（142,981 → 142,980）属正常：ZIP 内含构建时间戳，
+每次构建必然不同。核验时以当次 `SHA256SUMS.txt` 为准，不要跨轮比对哈希。
 
 
 ## 本轮做了什么
