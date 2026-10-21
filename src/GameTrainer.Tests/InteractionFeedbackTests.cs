@@ -79,6 +79,28 @@ public class InteractionFeedbackTests
         Assert.Contains("先刷新再操作", src);        // 无值
     }
 
+    [Fact]
+    public void 无值提示必须幂等_不能每次追加后缀()
+    {
+        // 真 bug：ShowNoValue 原先直接 _hint.Text + 后缀，而 _hint.Text 是它自己上一次的产物。
+        // 连点步进按钮 N 次就会叠 N 层「（先刷新再操作）」，把提示区撑爆到截断。
+        string src = ReadSource(@"src\GameTrainer\UI\ValueCard.cs");
+
+        // 必须有 EndsWith 判断来短路重复追加
+        Assert.Contains("EndsWith(NoValueSuffix", src);
+        // 后缀必须抽成常量，避免两处字面量不一致
+        Assert.Contains("private const string NoValueSuffix", src);
+    }
+
+    [Fact]
+    public void 忙碌分支标注了实际不可达()
+    {
+        // ShowBusy 当前不可达（_busy 只在同步 SetValue 期间为 true）。
+        // 不写清楚的话，后来者会以为它是活的反馈路径，或在重构时误删。
+        string src = ReadSource(@"src\GameTrainer\UI\ValueCard.cs");
+        Assert.Contains("实际不可达", src);
+    }
+
     private static int CountOccurrences(string haystack, string needle)
     {
         int n = 0, i = 0;

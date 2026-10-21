@@ -275,6 +275,14 @@ internal sealed class ValueCard : Panel
     // 原先 _busy / 解析失败 / 无值三种情况都直接 return，用户点了没反应，
     // 容易误判成"工具坏了"然后反复点击。这里统一给 hint 一句明确原因。
 
+    /// <summary>
+    /// 忙碌提示。
+    ///
+    /// 说明：_busy 只在 GUI 线程同步执行 SetValue 期间为 true（毫秒级），
+    /// 用户点击落不进那个窗口，所以这条分支**实际不可达**。
+    /// 保留它是因为写真实异步写入后它会立刻变可达——那时不需要回来补代码。
+    /// 真正的"写入进行中"反馈在 GuiForm 的 _writing 防重入里（走 Log）。
+    /// </summary>
     private void ShowBusy()
     {
         _hint.Text = "处理中，请稍候…";
@@ -287,11 +295,24 @@ internal sealed class ValueCard : Panel
         _hint.ForeColor = Tokens.Danger;
     }
 
+    private const string NoValueSuffix = "（先刷新再操作）";
+
     private void ShowNoValue()
     {
-        // 保留 SetValue 写下的原因（如「不在此场景」），只补一句可操作提示
-        string why = _hint.Text;
-        _hint.Text = string.IsNullOrWhiteSpace(why) ? "当前无可用值，请先刷新" : why + "（先刷新再操作）";
+        // 必须幂等：连续点击步进按钮会反复调用这里，而 _hint.Text 是自己上一次的产物。
+        // 若不做判断，每点一次就追加一层后缀——实测连点会变成
+        // 「不在此场景（先刷新再操作）（先刷新再操作）（先刷新再操作）…」把提示撑爆。
+        string why = _hint.Text ?? "";
+        if (why.EndsWith(NoValueSuffix, StringComparison.Ordinal))
+        {
+            // 已经是这条提示了，不重复追加
+            _hint.ForeColor = Tokens.Warning;
+            return;
+        }
+
+        _hint.Text = string.IsNullOrWhiteSpace(why)
+            ? "当前无可用值，请先刷新"
+            : why + NoValueSuffix;
         _hint.ForeColor = Tokens.Warning;
     }
 
