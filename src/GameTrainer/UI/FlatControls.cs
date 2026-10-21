@@ -22,6 +22,14 @@ internal sealed class FlatButton : Button
 
     public ButtonKind Kind { get; set; } = ButtonKind.Secondary;
 
+    /// <summary>
+    /// 截图工具专用：强制绘制焦点框。
+    /// ShowFocusCues 依赖窗口真实激活状态，DrawToBitmap 离线渲染时恒为 false，
+    /// 没有这个开关就无法在无焦点窗口里验证焦点框是否可见。
+    /// 生产代码不应设置它。
+    /// </summary>
+    public bool ForceFocusCue { get; set; }
+
     /// <summary>兼容旧调用点。</summary>
     public bool IsPrimary
     {
@@ -126,8 +134,11 @@ internal sealed class FlatButton : Button
         using (var pen = new Pen(border, 1f))
             g.DrawPath(pen, path);
 
-        // 焦点框：虚线内缩，不改变外框尺寸，避免焦点态导致布局跳动
-        if (Focused && Enabled && ShowFocusCues)
+        // 焦点框：虚线内缩，不改变外框尺寸，避免焦点态导致布局跳动。
+        //
+        // ForceFocusCue 是截图工具专用开关：ShowFocusCues 依赖窗口真实激活状态，
+        // DrawToBitmap 在后台渲染时恒为 false，否则无法离线验证焦点框是否可见。
+        if (Enabled && (ForceFocusCue || (Focused && ShowFocusCues)))
         {
             var focusRect = Rectangle.Inflate(rect, -3, -3);
             using var focusPen = new Pen(Tokens.Accent, 1f) { DashStyle = DashStyle.Dot };
@@ -147,6 +158,9 @@ internal sealed class ToggleSwitch : CheckBox
 {
     private bool _hover;
 
+    /// <summary>截图工具专用：强制绘制焦点框（原因同 FlatButton.ForceFocusCue）。</summary>
+    public bool ForceFocusCue { get; set; }
+
     public ToggleSwitch()
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint
@@ -161,6 +175,10 @@ internal sealed class ToggleSwitch : CheckBox
     protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
     protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }
     protected override void OnEnabledChanged(EventArgs e) { _hover = false; Invalidate(); base.OnEnabledChanged(e); }
+
+    /// <summary>焦点变化必须重绘，否则 Tab 移入/移出时焦点框不出现也不消失。</summary>
+    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+    protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -189,5 +207,18 @@ internal sealed class ToggleSwitch : CheckBox
             g.FillEllipse(kb, knob);
         using (var kp = new Pen(Enabled ? Tokens.TextDisabled : Tokens.Border, 1f))
             g.DrawEllipse(kp, knob);
+
+        // 焦点框：与 FlatButton 同款虚线内缩，不改变控件外框，避免焦点态引起布局跳动。
+        // 没有这段时 Tab 到开关上看不出焦点在哪——而开关控制的是「套盾」这类会改游戏数据的动作。
+        if (Enabled && (ForceFocusCue || (Focused && ShowFocusCues)))
+        {
+            // 用控件自身尺寸而不是 inflate(track)：track 是 40x20 居中放在 46x24 的控件里，
+            // 向外扩 3px 会变成 46x26，高度超出控件底部被裁掉。
+            // 改为按整个控件内缩 1px 画，保证框完整可见且不越界。
+            var focusRect = Rectangle.Inflate(new Rectangle(0, 0, Width - 1, Height - 1), -1, -1);
+            using var focusPen = new Pen(Tokens.Accent, 1f) { DashStyle = DashStyle.Dot };
+            using var fp = Draw.RoundedRect(focusRect, (trackH / 2) + 1);
+            g.DrawPath(focusPen, fp);
+        }
     }
 }

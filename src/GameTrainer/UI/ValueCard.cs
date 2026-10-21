@@ -228,7 +228,8 @@ internal sealed class ValueCard : Panel
 
     private void StepBy(double delta)
     {
-        if (_busy || !_hasValue) return;
+        if (_busy) { ShowBusy(); return; }
+        if (!_hasValue) { ShowNoValue(); return; }
         double target = _current + delta;
         if (Range is { Length: 2 })
             target = Math.Max(Range[0], Math.Min(Range[1], target));
@@ -238,8 +239,12 @@ internal sealed class ValueCard : Panel
     /// <summary>number 样式的应用按钮：读专用输入框。</summary>
     private void ApplyNumberInput()
     {
-        if (_busy) return;
-        if (!double.TryParse(_numInput.Text.Trim(), out double v)) return;
+        if (_busy) { ShowBusy(); return; }
+        if (!double.TryParse(_numInput.Text.Trim(), out double v))
+        {
+            ShowInputError(_numInput.Text);
+            return;
+        }
         if (Range is { Length: 2 } && (v < Range[0] || v > Range[1]))
         {
             _hint.Text = $"超出范围 {Range[0]}–{Range[1]}";
@@ -251,8 +256,12 @@ internal sealed class ValueCard : Panel
 
     private void ApplyInput()
     {
-        if (_busy) return;
-        if (!double.TryParse(_input.Text.Trim(), out double v)) return;
+        if (_busy) { ShowBusy(); return; }
+        if (!double.TryParse(_input.Text.Trim(), out double v))
+        {
+            ShowInputError(_input.Text);
+            return;
+        }
         if (Range is { Length: 2 } && (v < Range[0] || v > Range[1]))
         {
             _hint.Text = $"超出范围 {Range[0]}–{Range[1]}";
@@ -260,6 +269,30 @@ internal sealed class ValueCard : Panel
             return;
         }
         ApplyRequested?.Invoke(Semantic, v);
+    }
+
+    // ---- V6：静默失败改为可见反馈 ----
+    // 原先 _busy / 解析失败 / 无值三种情况都直接 return，用户点了没反应，
+    // 容易误判成"工具坏了"然后反复点击。这里统一给 hint 一句明确原因。
+
+    private void ShowBusy()
+    {
+        _hint.Text = "处理中，请稍候…";
+        _hint.ForeColor = Tokens.TextSecondary;
+    }
+
+    private void ShowInputError(string raw)
+    {
+        _hint.Text = string.IsNullOrWhiteSpace(raw) ? "请先输入数值" : $"「{raw}」不是有效数字";
+        _hint.ForeColor = Tokens.Danger;
+    }
+
+    private void ShowNoValue()
+    {
+        // 保留 SetValue 写下的原因（如「不在此场景」），只补一句可操作提示
+        string why = _hint.Text;
+        _hint.Text = string.IsNullOrWhiteSpace(why) ? "当前无可用值，请先刷新" : why + "（先刷新再操作）";
+        _hint.ForeColor = Tokens.Warning;
     }
 
     /// <summary>设置当前值。成功时更新显示，失败时显示错误。</summary>

@@ -119,6 +119,14 @@ internal static class Program
             dlg.Dispose();
         }
 
+        // ---- 焦点态验证 ----
+        //
+        // 为什么要单独做：ShowFocusCues 依赖窗口真实激活状态，
+        // DrawToBitmap 在后台渲染时恒为 false，正常截图永远看不到焦点框。
+        // 靠 press_key 发 Tab 又会抢人的输入焦点——所以改成在程序内部
+        // 打开 ForceFocusCue 开关再渲染，全程不碰键盘鼠标。
+        results.AddRange(CaptureFocusCues(gui, guiType, outDir, report));
+
         gui.Close();
         gui.Dispose();
 
@@ -126,6 +134,69 @@ internal static class Program
         foreach (string r in results) Console.WriteLine(r);
         Console.WriteLine(report.ToString());
         return 0;
+    }
+
+    /// <summary>
+    /// 逐个给可聚焦控件打开 ForceFocusCue 并单独截图。
+    /// 每张图只让一个控件显示焦点框，便于核对"焦点落在哪"。
+    /// </summary>
+    private static List<string> CaptureFocusCues(Form gui, Type guiType, string outDir, System.Text.StringBuilder report)
+    {
+        var list = new List<string>();
+        gui.Size = new Size(1120, 760);
+        gui.StartPosition = FormStartPosition.Manual;
+        gui.Location = new Point(40, 40);
+        gui.Show();
+        Pump(500);
+
+        // 收集所有带 ForceFocusCue 属性的控件（FlatButton / ToggleSwitch）
+        var focusables = new List<Control>();
+        CollectFocusables(gui, focusables);
+        report.AppendLine($"focusable.count = {focusables.Count}");
+
+        int i = 0;
+        foreach (Control c in focusables)
+        {
+            string label = SafeName(c, i);
+            // 全部关掉，只开一个
+            foreach (Control x in focusables) SetForce(x, false);
+            SetForce(c, true);
+            c.Invalidate();
+            Pump(120);
+
+            string path = Path.Combine(outDir, $"focus-{i:D2}-{label}.png");
+            list.Add(Capture(gui, path, gui.Size));
+            report.AppendLine($"focus[{i:D2}] {label}  size={c.Size}  visible={c.Visible}  enabled={c.Enabled}");
+            i++;
+        }
+
+        // 复位
+        foreach (Control x in focusables) SetForce(x, false);
+        gui.Hide();
+        return list;
+    }
+
+    private static void CollectFocusables(Control root, List<Control> sink)
+    {
+        foreach (Control c in root.Controls)
+        {
+            if (c.GetType().GetProperty("ForceFocusCue") != null) sink.Add(c);
+            CollectFocusables(c, sink);
+        }
+    }
+
+    private static void SetForce(Control c, bool on)
+        => c.GetType().GetProperty("ForceFocusCue")?.SetValue(c, on);
+
+    private static string SafeName(Control c, int idx)
+    {
+        string t = c.Text;
+        if (string.IsNullOrWhiteSpace(t)) t = c.GetType().Name;
+        var sb = new System.Text.StringBuilder();
+        foreach (char ch in t)
+            sb.Append(char.IsLetterOrDigit(ch) || ch == '_' ? ch : '_');
+        string s = sb.ToString();
+        return s.Length > 20 ? s.Substring(0, 20) : s;
     }
 
     private static Control FindFirst(Control root, Func<Control, bool> pred)
