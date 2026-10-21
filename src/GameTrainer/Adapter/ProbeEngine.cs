@@ -87,7 +87,9 @@ internal static class ProbeEngine
             }
             else
             {
-                r.Warn($"引擎 {engine} 的对象模型探测尚未实现（当前仅 construct3）");
+                // Electron / 纯 NW.js / 其他 Web 游戏没有统一对象模型，
+                // 走通用启发式探测：从常见框架根与全局对象出发广度遍历。
+                ProbeGenericObjects(cdp, r, P);
             }
 
             // ---- 阶段 4：存储 ----
@@ -210,6 +212,55 @@ internal static class ProbeEngine
         catch (Exception ex)
         {
             r.Warn("对象模型探测失败: " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 通用对象探测：用于没有标准运行时 API 的 Web 游戏。
+    ///
+    /// 把 GenericProbe 找到的候选整理成 DiscoveredObject，
+    /// 让后续的语义匹配与适配包生成逻辑能复用同一条路径。
+    /// </summary>
+    private static void ProbeGenericObjects(CdpClient cdp, Report r, Action<string> P)
+    {
+        try
+        {
+            var hits = GenericProbe.Probe(cdp, P);
+            if (hits.Count == 0)
+            {
+                r.Warn("通用探测未找到带语义名的数值属性。" +
+                       "该游戏可能把状态封装在闭包里，需要手工用 js 命令排查。");
+                return;
+            }
+
+            // 按对象路径前缀分组，还原成"对象 → 变量"的结构
+            var groups = hits.GroupBy(h =>
+            {
+                int dot = h.Path.LastIndexOf('.');
+                return dot > 0 ? h.Path[..dot] : h.Path;
+            });
+
+            foreach (var g in groups)
+            {
+                var vars = new List<DiscoveredVar>();
+                int idx = 0;
+                foreach (var h in g)
+                    vars.Add(new DiscoveredVar(idx++, h.Name, h.Value, h.Semantic, h.Score));
+
+                r.Objects.Add(new DiscoveredObject(g.Key, 1, vars));
+            }
+
+            P($"      OK  通用探测找到 {r.Objects.Count} 个对象、{hits.Count} 个候选变量");
+
+            int strong = hits.Count(h => h.Score >= 1.0);
+            if (strong > 0)
+                P($"      其中精确语义命中 {strong} 个");
+            else
+                r.Warn("没有精确语义命中，候选可能需要人工确认。");
+        }
+        catch (Exception ex)
+        {
+            r.Warn("通用对象探测失败: " + ex.Message);
         }
     }
 

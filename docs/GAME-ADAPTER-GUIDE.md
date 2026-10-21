@@ -84,6 +84,59 @@ GameTrainer.exe jsobj 9222 <对象名>
 
 ---
 
+## 二半、通用 Web 游戏探测（Electron / 纯 NW.js / 其他）
+
+Electron、纯 NW.js、以及任何没有标准对象模型的 Web 游戏，`probe` 会走
+**通用启发式探测**：从常见框架根与全局对象出发广度遍历，
+找出「名字像血量/金币且值是数字」的属性。
+
+```powershell
+GameTrainer.exe probe 9222          # 引擎识别为非 construct3 时自动走这条
+```
+
+### 能探到什么
+
+- 已知框架根：`window.game` / `player` / `state` / `Phaser` / `Cocos` / `Unity` 等
+- 全局对象扫描：`window` 上自定义的顶层对象（框架不在已知列表时靠这条）
+
+实测（向页面注入一个模拟游戏状态对象）：
+
+```
+__gtTestGame.player.health     = 100   → health
+__gtTestGame.player.maxHealth  = 100   → health_max
+__gtTestGame.player.gold       = 500   → gold
+__gtTestGame.stats.attack      = 12    → attack
+__gtTestGame.level             = 7     → level
+```
+
+### 限制（必须知道）
+
+| 限制 | 说明 |
+|---|---|
+| 遍历上限 | 4000 节点 / 深度 3，超出会提示「结果可能不完整」 |
+| 闭包内状态探不到 | 若游戏把状态封装在闭包里，通用探测找不到，需手工 `js` 排查 |
+| 只读 | 全程不调用任何函数，只读数据属性 |
+
+**探不到时怎么办**：用 `js` 命令手工检查全局对象，例如
+`js 9222 "Object.keys(self).filter(k=>typeof self[k]==='object')"`，
+找到状态对象后再写 `instance_var` 绑定。
+
+### 语义匹配的词边界规则
+
+自动探测靠变量名猜语义，规则是**按词边界**匹配，不是纯子串：
+
+| 情况 | 例子 | 置信度 |
+|---|---|---|
+| 完全相等 | `health` = `health` | 1.0 |
+| 别名作为完整词出现 | `playerHealth` → `health` | 0.7 |
+| 变量名作为完整词出现在别名里 | `hp` ⊂ `hpmax` | 0.5 |
+
+为什么不用纯子串：`_originalViewportWidth` 含 `vie`（Viewport 前三个字母），
+纯子串会把它判成 `health`；`constructor` 含 `or` 会被判成 `gold`。
+这两条都是实测踩到、由单元测试抓出来的。
+
+---
+
 ## 三、Construct 3 专项
 
 ### 3.1 运行时入口
