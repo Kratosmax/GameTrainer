@@ -130,6 +130,18 @@ temp/preview/verify-lite/GameTrainer.exe profiles
 ```
 launch <gameId> [--no-wait]   读适配包 → 定位 exe → 带端口启动 → 等就绪
 status <gameId>               进程 / 端口 / 绑定 三项状态
+probe <port> --game <gameId>  探测前自动启动游戏
+sem <gameId> ...              读取/写入前自动启动游戏
+```
+
+**方案 A 的完整形态**：`sem` 与 `probe` 在端口不通时会自动 launch。
+使用者只需一条命令，不必先手动开游戏，也不必记调试参数。
+
+```
+GameTrainer.exe sem solcesto read
+  → 端口未就绪，尝试自动启动 Sol Cesto…
+  → 自动启动成功，端口已就绪
+  → 3.2 秒读出全部语义
 ```
 
 适配包需要 `connection.installDir`（游戏安装目录）。未填时会按
@@ -151,6 +163,10 @@ GameTrainer.exe launch solcesto
    而且杀掉父进程会连带杀掉游戏。游戏是长期运行的进程，生命周期不该绑在一次 CLI 调用上。
 2. **`UseShellExecute=true` 下不能用 `ArgumentList`**，含空格的参数要自己加引号
    （见 `GameLauncher.QuoteArg`）。
+3. **只等端口不够，必须等 page 目标**。
+   `/json/version` 一响应就返回，但此时游戏页面可能还没加载，
+   `/json/list` 里没有 `type=page`，后续操作会报"没有找到可调试的 page 目标"。
+   正确做法是轮询到出现 url 非空的 page 目标为止。
 
 ### 已知边界
 

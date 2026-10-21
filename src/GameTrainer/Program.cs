@@ -440,6 +440,28 @@ internal static class Program
     // ---------------- 适配包（Game Adapter Pack）----------------
 
     /// <summary>
+/// 确保 CDP 端口就绪。不通时按适配包自动 launch（方案 A 的完整形态）：
+/// 使用者不必先手动启动游戏，也不必记调试参数。
+///
+/// 只在「有适配包」时生效；没有适配包就退回原来的"提示用户自己启动"。
+/// </summary>
+    private static bool EnsureCdpReady(GameAdapter adapter, int port, Action<string> progress = null)
+    {
+        if (GameLauncher.IsCdpReady(port, out _)) return true;
+
+        progress?.Invoke($"端口 {port} 未就绪，尝试自动启动 {adapter.Name}…");
+        var r = GameLauncher.Launch(adapter, progress: progress);
+        if (r.Ok && r.CdpReady)
+        {
+            progress?.Invoke("自动启动成功，端口已就绪。");
+            return true;
+        }
+
+        progress?.Invoke("自动启动失败：" + r.Message);
+        return false;
+    }
+
+    /// <summary>
     /// launch &lt;gameId&gt; [--no-wait]
     /// 替使用者带上调试参数启动游戏，并等待 CDP 就绪。
     /// 这是消除「每次要记调试端口」的方案 A，不改变游戏本身。
@@ -540,7 +562,7 @@ internal static class Program
     {
         if (a.Length < 2 || !int.TryParse(a[1], out int port))
         {
-            Console.Error.WriteLine("用法: probe <port> [--save <gameId> <name> <exe>] [titleFilter]");
+            Console.Error.WriteLine("用法: probe <port> [--game <gameId>] [--save <gameId> <name> <exe>] [titleFilter]");
             return 2;
         }
 
@@ -553,6 +575,27 @@ internal static class Program
                 saveId = a[++i]; saveName = a[++i]; saveExe = a[++i];
             }
             else titleFilter = a[i];
+        }
+
+        // 方案 A：若指定了适配包或端口不通，先确保游戏起来了
+        string probeGameId = saveId;
+        for (int i = 2; i < a.Length - 1; i++)
+            if (a[i] == "--game") probeGameId = a[i + 1];
+        if (probeGameId != null)
+        {
+            string ap = Path.Combine(_skillRoot, "adapters", probeGameId, "adapter.json");
+            if (File.Exists(ap))
+            {
+                try
+                {
+                    var ad = GameAdapter.Load(ap);
+                    EnsureCdpReady(ad, port, line => Console.WriteLine(line));
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"（适配包 {probeGameId} 加载失败，跳过自动启动：{ex.Message}）");
+                }
+            }
         }
 
         try
@@ -674,6 +717,12 @@ internal static class Program
 
         try
         {
+            // 方案 A：端口不通就自动启动，使用者不用记调试参数
+            if (adapter.Engine != "native_memory")
+            {
+                EnsureCdpReady(adapter, adapter.Connection.DebugPort, line => Console.WriteLine(line));
+            }
+
             if (action == "read")
             {
                 var wanted = a.Length > 3 && !a[3].StartsWith("-")

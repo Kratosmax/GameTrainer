@@ -151,27 +151,54 @@ internal static class GameLauncher
         return null;
     }
 
-    /// <summary>轮询 CDP 端口直到就绪或超时。</summary>
+    /// <summary>
+    /// 等待 CDP 端口**且**出现可调试的 page 目标。
+    ///
+    /// 只等 /json/version 是不够的：端口一开就返回，但此时游戏页面可能还没加载，
+    /// /json/list 里没有 type=page 的目标，后续操作会报"没有找到可调试的 page 目标"。
+    /// </summary>
     private static bool WaitForCdp(int port, int timeoutSec, out string lastError)
     {
         lastError = null;
         var deadline = DateTime.UtcNow.AddSeconds(timeoutSec);
         using var http = new HttpClient { Timeout = TimeSpan.FromMilliseconds(800) };
+        bool portSeen = false;
 
         while (DateTime.UtcNow < deadline)
         {
             try
             {
-                string json = http.GetStringAsync($"http://127.0.0.1:{port}/json/version")
+                // 1) 端口是否响应
+                string ver = http.GetStringAsync($"http://127.0.0.1:{port}/json/version")
                                   .GetAwaiter().GetResult();
-                if (!string.IsNullOrWhiteSpace(json)) return true;
+                portSeen = true;
+
+                // 2) 是否已有 page 目标
+                string list = http.GetStringAsync($"http://127.0.0.1:{port}/json/list")
+                                  .GetAwaiter().GetResult();
+                using var doc = System.Text.Json.JsonDocument.Parse(list);
+                foreach (var t in doc.RootElement.EnumerateArray())
+                {
+                    if (t.TryGetProperty("type", out var ty) && ty.GetString() == "page")
+                    {
+                        // page 有了，再确认其 url 非空白（部分引擎先建空 page 后填 url）
+                        if (t.TryGetProperty("url", out var u) &&
+                            u.ValueKind == System.Text.Json.JsonValueKind.String &&
+                            !string.IsNullOrWhiteSpace(u.GetString()))
+                            return true;
+                    }
+                }
+                lastError = "端口已响应，但页面目标尚未就绪";
             }
             catch (Exception ex)
             {
                 lastError = ex.Message;
             }
-            Thread.Sleep(500);
+            Thread.Sleep(400);
         }
+
+        if (portSeen)
+            lastError = "端口已响应，但 " + timeoutSec + " 秒内没有出现可调试的页面目标";
         return false;
     }
 
