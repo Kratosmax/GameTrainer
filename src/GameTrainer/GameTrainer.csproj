@@ -25,4 +25,10 @@
     <Description>单机游戏内存 / 存档修改器</Description>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- 测试项目需要访问 internal 的纯函数类（AobPattern / ValueCodec / Semantics 等）。
+         只开放给测试程序集，不改变生产代码的可见性。 -->
+    <InternalsVisibleTo Include="GameTrainer.Tests" />
+  </ItemGroup>
+
 </Project>

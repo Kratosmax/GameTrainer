@@ -561,7 +561,9 @@ internal sealed class PatchEngine
         return true;
     }
 
-    private static long ParseOffset(string s)
+    /// <summary>解析偏移字符串。支持 "-0x18" / "+0x18" / "-24" / "0x18"。
+    /// 独立成 internal 是为了让单元测试直接覆盖——写反符号会静默读到错误地址。</summary>
+    internal static long ParseOffset(string s)
     {
         string t = s.Trim();
         bool negative = false;

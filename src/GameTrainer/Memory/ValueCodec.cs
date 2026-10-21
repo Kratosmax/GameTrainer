@@ -64,19 +64,30 @@ internal static class ValueCodec
         return buf;
     }
 
-    public static object Decode(ReadOnlySpan<byte> buf, NumType t) => t switch
+    /// <summary>
+    /// 按类型解码。
+    ///
+    /// 注意：必须用 switch **语句**并显式装箱每个分支，不能用 switch 表达式。
+    /// switch 表达式会做类型统一推断——所有分支都能隐式转成 double，
+    /// 于是整个表达式被推断为 double，每个分支都被转成 double 再装箱。
+    /// 后果是 int64/uint64 超过 2^53 时丢失精度（真实踩过的 bug，由单元测试发现）。
+    /// </summary>
+    public static object Decode(ReadOnlySpan<byte> buf, NumType t)
     {
-        NumType.Byte => buf[0],
-        NumType.Int16 => BinaryPrimitives.ReadInt16LittleEndian(buf),
-        NumType.UInt16 => BinaryPrimitives.ReadUInt16LittleEndian(buf),
-        NumType.Int32 => BinaryPrimitives.ReadInt32LittleEndian(buf),
-        NumType.UInt32 => BinaryPrimitives.ReadUInt32LittleEndian(buf),
-        NumType.Int64 => BinaryPrimitives.ReadInt64LittleEndian(buf),
-        NumType.UInt64 => BinaryPrimitives.ReadUInt64LittleEndian(buf),
-        NumType.Float => BinaryPrimitives.ReadSingleLittleEndian(buf),
-        NumType.Double => BinaryPrimitives.ReadDoubleLittleEndian(buf),
-        _ => throw new ArgumentOutOfRangeException(nameof(t))
-    };
+        switch (t)
+        {
+            case NumType.Byte: return buf[0];
+            case NumType.Int16: return BinaryPrimitives.ReadInt16LittleEndian(buf);
+            case NumType.UInt16: return BinaryPrimitives.ReadUInt16LittleEndian(buf);
+            case NumType.Int32: return BinaryPrimitives.ReadInt32LittleEndian(buf);
+            case NumType.UInt32: return BinaryPrimitives.ReadUInt32LittleEndian(buf);
+            case NumType.Int64: return BinaryPrimitives.ReadInt64LittleEndian(buf);
+            case NumType.UInt64: return BinaryPrimitives.ReadUInt64LittleEndian(buf);
+            case NumType.Float: return BinaryPrimitives.ReadSingleLittleEndian(buf);
+            case NumType.Double: return BinaryPrimitives.ReadDoubleLittleEndian(buf);
+            default: throw new ArgumentOutOfRangeException(nameof(t));
+        }
+    }
 
     /// <summary>把值转换成双精度用于区间比较，只对数值类型有意义。</summary>
     public static double ToDouble(object v) => v switch

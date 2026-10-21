@@ -1,6 +1,7 @@
 # GameTrainer
 
-单机游戏内存 / 存档修改器。一个托盘程序 + 每个游戏一份 profile（`profiles/*.json`），换游戏只换 profile，程序不动。
+单机游戏内存 / 存档修改器。**一个游戏一份适配包**（`adapters/<id>/adapter.json`），
+换游戏只换适配包，主程序不动。
 
 **只处理单机内容。** 不做反作弊绕过、不做联机内容、不做 DRM 破解。
 
@@ -19,50 +20,83 @@
 | 操作系统 | Windows 10 x64 (1809+) / Windows 11 |
 | 运行时 | Lite 包需预装 [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)（x64）；Full 包已自带 |
 | 权限 | 普通用户即可。仅当目标游戏本身以管理员运行时才需要同等级提权 |
-| 显示 | 96 DPI 基线；已适配 125% / 150% 缩放 |
+| 显示 | 96 DPI 基线；125% / 150% 缩放已适配 |
 
-### 下载选择
+### 支持的三种游戏
 
-| 包 | 适用 | 特点 |
+| 类型 | 例子 | 路径 |
 |---|---|---|
-| `GameTrainer-<ver>-Lite.zip` | 已装 .NET 8 运行时 | 体积小，解压即用 |
-| `GameTrainer-<ver>-Full.zip` | 未装运行时 | 自带运行时，体积大 |
+| Web 引擎（NW.js / Electron / CEF） | Construct 3、Cocos | CDP 调试接口 |
+| 原生程序 | Unity、UE、自研引擎 | 内存 AOB 签名 |
 
-包内 `channel.txt` 标记通道，`version.txt` 标记版本。自动更新只接受同通道包。
+判断方法见 [`docs/GAME-ADAPTER-GUIDE.md`](docs/GAME-ADAPTER-GUIDE.md)。
 
 ### 安装与运行
 
 便携式，无需安装：
 
 1. 解压到任意目录（不要放在受系统保护的位置）。
-2. 双击 `GameTrainer.exe` 打开主窗口，或运行 `GameTrainer.exe --background` 只驻留托盘。
+2. 双击 `GameTrainer.exe` 打开主窗口，或 `GameTrainer.exe --background` 只驻留托盘。
 3. 首次启动会在程序目录下创建 `snapshots/` 与 `audit.log`。
 
 ### 主要工作流
 
-```
-选择游戏(左侧栏) → 附加到游戏 → 逐个打开修改项开关 → 用完全部回滚
-```
+界面：选游戏 → 点「启动游戏」→ 数值卡片上直接改。
 
-命令行等价操作：
+命令行更省事，**不用手动带调试参数**：
 
 ```powershell
 $gt = "<解压目录>\GameTrainer.exe"
 
-& $gt profiles                              # 列出全部 profile
-& $gt check    <profileId>                  # 附加 + 反作弊检查（只读）
-& $gt aob      <profileId> "<AOB>"          # 测签名唯一性（只读）
-& $gt scan     <profileId> <value> [type]   # 首扫
-& $gt narrow   <profileId> exact <v>        # 再扫：精确 / changed / unchanged / range
-& $gt apply    <profileId> <patchId> --dry-run   # 只校验不写
-& $gt apply    <profileId> <patchId>             # 真写
-& $gt revert   <profileId> <patchId>             # 回滚
-& $gt revert   <profileId> <patchId> --by-profile # 跨进程补救还原
-& $gt snapshot <profileId> "说明"           # 存档快照
-& $gt restore  <profileId> <snapshotId>     # 从快照恢复
-& $gt save-edit <profileId> <patchId>       # 存档编辑
-& $gt gui                                   # 托盘统一入口
+# Web 游戏（自动启动 + 等端口就绪 + 读取）
+& $gt sem solcesto read
+& $gt sem solcesto write health 20
+& $gt sem solcesto write gold 9999
+
+# 只启动 / 只看状态
+& $gt launch solcesto
+& $gt status solcesto
+
+# 原生游戏：先探测出 AOB 签名
+& $gt probe --native <进程名> <当前值> double
+& $gt probe --native <进程名> <新值>   double --next
 ```
+
+### 语义名对照
+
+所有命令都用**语义名**，不认游戏内部的变量名（`vie` / `or` / `HP` 这些）。
+
+| 语义 | 含义 | 语义 | 含义 |
+|---|---|---|---|
+| `health` | 当前血量 | `attack` | 攻击 / 力量 |
+| `health_max` | 血量上限 | `magic` | 魔法 |
+| `gold` | 局内金币 | `defense` | 防御 / 护盾 |
+| `gold_total` | 累计金币 | `level` | 等级 |
+| `energy` | 能量 | `capacity` | 背包容量 |
+| `energy_charge` | 能量累积 | `energy_charge_max` | 累积上限 |
+
+### 界面上怎么改
+
+| 数值类型 | 交互 |
+|---|---|
+| 血量、能量累积 | 「回满」按钮 + 折叠的手动设置 |
+| 攻击、魔法、能量、背包 | −/+ 步进 + 折叠的手动设置 |
+| 金币、上限 | 输入框 + 「应用」 |
+| 护盾 | 开关 + 「持久」勾选 |
+
+勾选「持久」后会每秒检查，值丢失自动补回；**退出对局自动停止**。
+
+### 局内 vs 局外
+
+这是最需要理解的一点：
+
+| 值的特点 | 例子 | 改了之后 |
+|---|---|---|
+| 会持久化 | 金币总量、解锁状态 | 重启游戏仍然有效 |
+| 只在一局内 | 当前血量、局内金币 | **重开一局就重置** |
+
+肉鸽类游戏（每局重开）的局内数值重置是**正常现象**，不是工具出错。
+角色初始属性来自游戏的数据表，每局从这里重读。
 
 ### 用户数据位置
 
@@ -70,29 +104,27 @@ $gt = "<解压目录>\GameTrainer.exe"
 
 | 内容 | 位置 |
 |---|---|
-| profile | `profiles/*.json` |
+| 适配包 | `adapters/<id>/adapter.json` |
+| 旧格式 profile（内存后端兼容） | `profiles/*.json` |
 | 存档快照 / 扫描状态 / 激活记录 | `snapshots/` |
 | 写入与回滚审计 | `audit.log` |
 | 开机自启注册项 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\GameTrainer` |
 
-### 更新
-
-自动更新通道尚未接入（见「AI 继续开发」的待办）。当前版本请手动替换 EXE 与 DLL，保留 `profiles/` 和 `snapshots/`。
-
 ### 卸载
 
 1. 设置页关闭「开机自动启动」（会删除 Run 注册项）。
-2. 托盘菜单选「全部回滚并退出」，确认没有残留修改。
+2. 确认没有残留修改（`audit.log` 可查）。
 3. 直接删除程序目录。
 
 ### 常见故障
 
 | 现象 | 原因与处理 |
 |---|---|
+| 卡片显示「不在此场景」 | 游戏还停在标题页，进对局后点「刷新数值」 |
 | `OpenProcess 失败 (Win32 5)` | 目标以管理员运行 → 本工具也要提权；或目标已退出 |
 | `AOB 未命中` | 签名里可能含被自己改掉的字节；或游戏已更新需重扫 |
-| `AOB 不唯一` | 签名太短，加长或用 `module` 限定，或改用指针链 |
-| `前值校验失败` | 游戏内数值已变，这是保护生效，不是错误 |
+| `AOB 不唯一` | 签名太短，加长或用 `module` 限定 |
+| 值超出允许区间 | 保护生效，适配包里的 `range` 拦住了荒谬值 |
 | 反作弊闸阻断 | 设计行为，硬阻断且不可关闭 |
 | 关闭窗口后找不到程序 | 已最小化到托盘，双击托盘图标恢复 |
 
@@ -112,14 +144,20 @@ $gt = "<解压目录>\GameTrainer.exe"
 
 ```powershell
 # 编译（0 警告 0 错误为目标）
-dotnet build src/GameTrainer/GameTrainer.csproj -c Release
+dotnet build GameTrainer.sln -c Release -m:1
+
+# 单元测试（102 个用例，覆盖 AOB 解析、编解码、语义匹配、偏移解析）
+dotnet test src/GameTrainer.Tests/GameTrainer.Tests.csproj -c Release
 
 # UI 截图验证：真实窗口渲染 + 材质返回值落盘
 dotnet build src/UiShot/UiShot.csproj -c Release
 temp/build/UiShot/Release/net8.0-windows/GtUiShot.exe . temp/ui-shot
 
-# 对比度核算（WCAG 2.1，29 项门槛检查）
+# 对比度核算（WCAG 2.1，28 项门槛检查）
 python tools/check-contrast.py
+
+# UI 规范审查（对照 desktop-tool-ui-release 的 ui-design.md）
+python tools/review-ui.py
 ```
 
 产物目录：`temp/build/<项目名>/Release/net8.0-windows/`。所有构建中间物与产物都落在 `temp/`，不进源码树。
@@ -166,8 +204,10 @@ game-trainer/
 ├── adapters/                   适配包：一个游戏一份
 │   └── solcesto/adapter.json
 ├── build/package.ps1           四包构建（当前实现 Full/Lite ZIP）
-├── tools/check-contrast.py     WCAG 对比度核算
-├── profiles/                   旧格式 profile（内存后端用）
+├── tools/
+│   ├── check-contrast.py       WCAG 对比度核算
+│   └── review-ui.py            UI 规范逐条审查
+├── profiles/                   旧格式 profile（内存后端兼容）
 ├── src/
 │   ├── GameTrainer/            主程序
 │   │   ├── Program.cs          命令行入口与命令分发
@@ -175,18 +215,21 @@ game-trainer/
 │   │   ├── SettingsForm.cs     统一设置页
 │   │   ├── AppVersion.cs       从程序集读版本（真源在 Directory.Build.props）
 │   │   ├── Adapter/            适配包体系
-│   │   │   ├── Semantics.cs      通用语义表与别名匹配
-│   │   │   ├── GameAdapter.cs    适配包模型与校验
-│   │   │   ├── ProbeEngine.cs    只读探测器（5 阶段）
-│   │   │   ├── AdapterRunner.cs  按语义读写执行器
-│   │   │   └── GameLauncher.cs   带调试参数启动游戏（方案 A）
+│   │   │   ├── Semantics.cs        通用语义表与别名匹配
+│   │   │   ├── GameAdapter.cs      适配包模型与校验
+│   │   │   ├── ProbeEngine.cs      Web 探测器（5 阶段）
+│   │   │   ├── NativeProbe.cs      原生进程探测器（值扫描 + AOB 生成）
+│   │   │   ├── AdapterRunner.cs    按语义读写执行器
+│   │   │   ├── MemoryBackend.cs    memory_aob 后端（原生进程读写）
+│   │   │   └── GameLauncher.cs     带调试参数启动游戏
 │   │   ├── Js/CdpClient.cs     CDP 客户端（NW.js/Electron/CEF）
 │   │   ├── Core/               热键、单实例、自启、审计、反作弊、激活状态
-│   │   ├── Engine/             PatchEngine / SaveEngine / Scanner
+│   │   ├── Engine/             PatchEngine / SaveEngine / Scanner / PersistentWatcher
 │   │   ├── Memory/             进程内存、AOB、数值编解码
 │   │   ├── Native/             Win32 P/Invoke + WindowMaterial(DWM)
 │   │   ├── Profiles/           profile 模型与校验
 │   │   └── UI/                 设计令牌与全部自绘控件
+│   ├── GameTrainer.Tests/      单元测试（xUnit）
 │   ├── TestTarget/             自测靶进程
 │   ├── Probe/                  内存读取验证工具
 │   └── UiShot/                 UI 截图验证工具
@@ -200,13 +243,15 @@ game-trainer/
 - **安全边界（不可放宽）**：写入前四道校验（签名唯一 / 前值 / 区间 / 字节上限）；检测到反作弊即强制只读；不做任何绕过。
 - **回滚边界**：正常退出与目标进程退出会自动回滚；修改器被强杀不会。靠 `snapshots/active-state.json` + `revert --by-profile` 补救。
 - **AOB 铁律**：签名中绝不能包含会被本次写入改掉的字节。
+- **内存后端不缓存地址**：进程重启后地址必变，每次操作都重新扫描。
 
 ### 最低验证命令
 
 ```powershell
 dotnet build GameTrainer.sln -c Release -m:1          # 期望 0 警告 0 错误
-temp/build/UiShot/Release/net8.0-windows/GtUiShot.exe . temp/ui-shot
+dotnet test src/GameTrainer.Tests -c Release          # 期望全部通过
 python tools/check-contrast.py                         # 期望 exit 0
+python tools/review-ui.py                              # 期望 exit 0
 powershell -File build/package.ps1 -Channel Lite -PreviewOnly
 ```
 
@@ -222,6 +267,9 @@ UI 改动必须看真实渲染截图，不能只凭源码判断；`temp/ui-shot/
 
 ### 已知待办
 
+- **ProbeEngine 只支持 construct3**：Electron / NW.js 原生游戏的对象模型探测未实现。
+- **适配包不支持 `chain`**：多级指针链只有 profile 能用。
 - 自动更新模块（清单签名、下载暂存、包预检、外部替换器）尚未实现。
 - 安装器（Inno Setup）尚未接入，目前只分发 ZIP。
 - GitHub Actions 工作流尚未建立。
+- 高 DPI（125% / 150%）布局未实测。
