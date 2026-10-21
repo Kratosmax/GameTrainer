@@ -449,6 +449,47 @@ internal sealed class ValueCard : Panel
         // 底部留白 + 固定最小高度：同一排卡片视觉对齐，
         // 不因有无 warning / hint 而参差（ui-design.md：动态状态不得改变行高）
         Height = Math.Max(y + Tokens.S3, 168);
+
+        // 悬停提示必须在这里挂：只有布局完成、控件拿到最终宽度后，
+        // 才能判断文本是否真的被省略号截断。放在构造期会因宽度未定而误判。
+        RefreshToolTips();
+    }
+
+    /// <summary>
+    /// 给可能被 Ellipsis 截断的文本挂 ToolTip。
+    ///
+    /// 挂载对象只有 hint 与 warning：
+    ///   - _name 是固定短标签，不会截断
+    ///   - _value 是数值，不会截断
+    ///   - _hint / _warning 都是 AutoEllipsis = true，且 warning 来自适配包
+    ///     b.Warning（作者自定义，长度不受控，实际就有 20+ 字的）
+    ///
+    /// 只在真的被截断时才挂：否则每张卡片悬停都弹提示，反而干扰。
+    /// </summary>
+    private void RefreshToolTips()
+    {
+        AttachTipIfTruncated(_hint);
+        AttachTipIfTruncated(_warning);
+    }
+
+    private void AttachTipIfTruncated(Label label)
+    {
+        if (label == null) return;
+        string text = label.Text ?? "";
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            _tip.SetToolTip(label, null);
+            return;
+        }
+
+        // TextRenderer.MeasureText 按控件实际宽度与字体测量：
+        // 超过可用宽度才认为会被省略号吃掉。
+        Size proposed = new(label.ClientSize.Width, int.MaxValue);
+        Size measured = TextRenderer.MeasureText(text, label.Font, proposed,
+            TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
+        bool truncated = measured.Height > label.ClientSize.Height;
+
+        _tip.SetToolTip(label, truncated ? text : null);
     }
 
     private void LayoutBody()

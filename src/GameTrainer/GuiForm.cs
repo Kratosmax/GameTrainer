@@ -24,14 +24,19 @@ namespace GameTrainer;
 internal sealed class GuiForm : Form
 {
     private readonly string _skillRoot;
-    private ProcessMemory _mem;
     private GameAdapter _adapter;
     private readonly Dictionary<string, ValueCard> _cards = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PersistentWatcher> _watchers = new(StringComparer.OrdinalIgnoreCase);
     private GameProfile _profile;
+    /// <summary>
+    /// 旧 profile 写入引擎。DoAttach 删除后已无赋值点，恒为 null——
+    /// 所有 `_engine == null` 判断都会走"尚未附加"分支。
+    /// 保留字段让旧 profile 动作代码仍能编译；整条链路属遗留死代码，
+    /// 清理需另立议题，不在本次范围。
+    /// </summary>
+#pragma warning disable CS0649 // 恒为 null：见上方说明，这是刻意的
     private PatchEngine _engine;
-    private SaveEngine _save;
-    private AuditLog _log;
+#pragma warning restore CS0649
     private HotkeyManager _hotkeys;
     private readonly ActiveStateStore _activeStore;
     private readonly SingleInstanceGuard _single;
@@ -1200,57 +1205,10 @@ internal sealed class GuiForm : Form
         return $"{p.Writes.Count} 处写入 · {lockMode}";
     }
 
-    private void DoAttach()
-    {
-        if (_profile == null) { Log("请先选择 profile。"); return; }
-
-        try
-        {
-            _mem?.Dispose();
-            _mem = ProcessMemory.AttachByName(_profile.Exe);
-            _log = new AuditLog(Path.Combine(_skillRoot, "audit.log"));
-            _engine = new PatchEngine(_mem, _profile, _log, new RollbackStack(), _activeStore);
-            _save = new SaveEngine(_profile, _log, _skillRoot, _activeStore);
-
-            _engine.ApplyAntiCheat(_profile.Anticheat);
-
-            if (_engine.ReadOnlyForced)
-            {
-                _attachBadge.SetStyle(Tokens.DangerSubtle, Tokens.Danger, $"已附加 PID {_mem.Pid}");
-                _antiCheatBadge.SetStyle(Tokens.DangerSubtle, Tokens.Danger, "反作弊：已阻断写入");
-                _statusAttach.Text = $"已附加 PID {_mem.Pid} · 只读";
-                _statusAttach.ForeColor = Tokens.Danger;
-                _statusAntiCheat.Text = "反作弊：已阻断写入";
-                _statusAntiCheat.ForeColor = Tokens.Danger;
-                Log("[阻断] " + _engine.ReadOnlyReason);
-            }
-            else
-            {
-                _attachBadge.SetStyle(Tokens.SuccessSubtle, Tokens.Success, $"已附加 PID {_mem.Pid}");
-                _antiCheatBadge.SetStyle(Tokens.SurfaceSunken, Tokens.TextSecondary, "未连接");
-                _statusAttach.Text = $"已附加 PID {_mem.Pid} · {_profile.Exe}";
-                _statusAttach.ForeColor = Tokens.Success;
-                _statusAntiCheat.Text = "反作弊：未检测";
-                _statusAntiCheat.ForeColor = Tokens.TextSecondary;
-                Log($"已附加 PID {_mem.Pid}，内存区域 {_mem.Regions.Count} 个");
-            }
-
-            foreach (ToggleSwitch t in _toggles.Values) t.Enabled = !_engine.ReadOnlyForced;
-            foreach (PatchRow r in _rows.Values)
-                r.State = _engine.ReadOnlyForced ? PatchRow.StateKind.Blocked : PatchRow.StateKind.Ready;
-
-            // 注意：旧 profile 附加模式当前没有 UI 入口（DoAttach 无调用点），
-            // 这里也不再启用「刷新数值」——它只对适配包模式有意义。待另立议题处理。
-            _patchEmpty.Visible = false;
-        }
-        catch (Exception ex)
-        {
-            Log("[错误] 附加失败：" + ex.Message);
-            _attachBadge.SetStyle(Tokens.DangerSubtle, Tokens.Danger, "附加失败");
-            _statusAttach.Text = "附加失败";
-            _statusAttach.ForeColor = Tokens.Danger;
-        }
-    }
+    // DoAttach（旧 profile 附加）已于 2026-10-21 删除：
+    // 该方法零调用点，且代码自承「旧 profile 附加模式当前没有 UI 入口」。
+    // 适配包体系（sem 命令）已完全覆盖其功能。
+    // 若将来恢复旧 profile UI 入口，参考 git 历史重建。
 
     private void OnToggle(string patchId, bool on)
     {
@@ -1453,7 +1411,7 @@ internal sealed class GuiForm : Form
         _hotkeys?.Dispose();
         _tray.Visible = false;
         _tray.Dispose();
-        _mem?.Dispose();
+        // _mem 已随 DoAttach 删除
     }
 
     /// <summary>供自检/诊断读取当前材质结果，UI 测试也用它断言回退行为。</summary>
