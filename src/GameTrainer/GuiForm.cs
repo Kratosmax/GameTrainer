@@ -379,7 +379,7 @@ internal sealed class GuiForm : Form
         _logCard.Dock = DockStyle.Fill;
         _logCard.Margin = new Padding(0);
 
-        var logPad = new Panel
+        _logPad = new Panel
         {
             Dock = DockStyle.Fill,
             BackColor = Tokens.Surface,
@@ -393,14 +393,14 @@ internal sealed class GuiForm : Form
         };
         _logBox.Dock = DockStyle.Fill;
         logInner.Controls.Add(_logBox);
-        logPad.Controls.Add(logInner);
-        _logCard.Controls.Add(logPad);
+        _logPad.Controls.Add(logInner);
+        _logCard.Controls.Add(_logPad);
 
         // 日志区可收起：点标题栏右侧的「收起」切换。
         // 依据 ui-design.md：低频区占用主要空间时应提供可发现且状态稳定的折叠能力。
         _logCard.ActionText = "收起";
         _logCard.Cursor = Cursors.Hand;
-        _logCard.HeaderClick += () => ToggleLogCollapsed(logPad);
+        _logCard.HeaderClick += () => ToggleLogCollapsed(_logPad);
 
         _contentGrid.Controls.Add(_patchCard, 0, 0);
         _contentGrid.Controls.Add(_logCard, 1, 0);
@@ -480,6 +480,7 @@ internal sealed class GuiForm : Form
         return one.Length > 24 ? one[..24] + "…" : one;
     }
 
+    private Panel _logPad;
     private bool _stacked;
     private bool _logCollapsed;
 
@@ -523,6 +524,16 @@ internal sealed class GuiForm : Form
         if (shouldStack == _stacked) return;
         _stacked = shouldStack;
 
+        // 窄窗口下日志自动收起：卡片是主工作流，日志是低频信息。
+        // 只在进入窄布局时自动收一次，之后尊重用户的显式选择。
+        if (shouldStack && !_logCollapsed && _logPad != null)
+        {
+            _logCollapsed = true;
+            _logPad.Visible = false;
+            _logCard.ActionText = "展开";
+            _logCard.Invalidate();
+        }
+
         _contentGrid.SuspendLayout();
         _contentGrid.ColumnStyles.Clear();
         _contentGrid.RowStyles.Clear();
@@ -542,8 +553,17 @@ internal sealed class GuiForm : Form
         {
             _contentGrid.ColumnCount = 2;
             _contentGrid.RowCount = 1;
-            _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
-            _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+            // 尊重用户手动收起的日志：窗口从窄拉宽后不该把它重新撑开
+            if (_logCollapsed)
+            {
+                _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+            }
+            else
+            {
+                _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
+                _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+            }
             _contentGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             _contentGrid.SetCellPosition(_patchCard, new TableLayoutPanelCellPosition(0, 0));
             _contentGrid.SetCellPosition(_logCard, new TableLayoutPanelCellPosition(1, 0));
@@ -937,11 +957,30 @@ internal sealed class GuiForm : Form
                 Log($"已刷新数值：成功 {ok}");
                 _attachBadge.SetStyle(Tokens.SuccessSubtle, Tokens.Success, "已连接");
             }
+            else if (ok > 0)
+            {
+                // 部分成功 = 已连上，但有些值不在当前场景（如未开局时的局内数值）。
+                // 这不是错误，用警告色而非危险色，避免使用者误判连接断了。
+                Log($"已刷新数值：成功 {ok}，{fail} 项不在当前场景");
+                _attachBadge.SetStyle(Tokens.SuccessSubtle, Tokens.Success, "已连接");
+            }
             else
             {
-                Log($"已刷新数值：成功 {ok}，失败 {fail}");
+                Log($"已刷新数值：失败 {fail} 项");
                 if (firstError != null) Log("[错误] " + firstError.Replace("\n", " "));
-                _attachBadge.SetStyle(Tokens.DangerSubtle, Tokens.Danger, "读取失败");
+                // 全失败才可能是连接问题，但要靠错误内容区分：
+                // 若是"无实例/不在此场景"，仍是连上了只是不在局内。
+                bool sceneOnly = firstError != null
+                    && (firstError.Contains("无实例") || firstError.Contains("不在此场景"));
+                if (sceneOnly)
+                {
+                    Log("[提示] 已连接，但当前不在对局内。进入游戏后点「刷新数值」。");
+                    _attachBadge.SetStyle(Tokens.WarningSubtle, Tokens.Warning, "不在局内");
+                }
+                else
+                {
+                    _attachBadge.SetStyle(Tokens.DangerSubtle, Tokens.Danger, "读取失败");
+                }
             }
         }
         finally
