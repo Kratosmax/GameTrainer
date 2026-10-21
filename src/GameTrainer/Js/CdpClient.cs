@@ -16,7 +16,17 @@ namespace GameTrainer;
 internal sealed class CdpClient : IDisposable
 {
     private ClientWebSocket _ws;
+    /// <summary>测试注入通道：非 null 时 Evaluate/Dispose 走它而不是 _ws。</summary>
+    private WebSocket _anyWs;
     private int _msgId;
+    /// <summary>
+    /// Evaluate 的串行化锁。WebSocket 不允许并发 Send/Receive，
+    /// ++_msgId 也非原子；当前生产调用点都自建自毁连接所以未触发，
+    /// 但 M5（连接复用）共享实例前必须先有这把锁。
+    /// </summary>
+    private readonly object _ioLock = new();
+
+    private WebSocket Ws => _anyWs ?? _ws;
 
     public string TargetTitle { get; private set; } = "";
     public string TargetUrl { get; private set; } = "";
@@ -59,69 +69,87 @@ internal sealed class CdpClient : IDisposable
         return c;
     }
 
+    /// <summary>
+    /// 测试专用：注入已建立的 WebSocket，跳过 HTTP 目标发现。
+    /// 生产代码请用 Connect（它负责 /json/version 与 /json/list 与目标筛选）。
+    /// </summary>
+    internal static CdpClient CreateConnected(WebSocket ws)
+        => new() { _anyWs = ws };
+
     /// <summary>在页面上下文执行 JS，返回求值结果（已转为字符串）。</summary>
+    /// <remarks>
+    /// 线程安全：整段串行化（_ioLock）。WebSocket 协议不允许同一实例上
+    /// 并发 Send/Receive，两个线程同时 Evaluate 会交叉读到对方的响应。
+    /// 想并发请各建各的连接（当前所有生产调用点都是这么做的）。
+    /// </remarks>
     public string Evaluate(string expression, bool awaitPromise = true, int timeoutMs = 30000)
     {
-        int id = ++_msgId;
-        var payload = new
+        lock (_ioLock)
         {
-            id,
-            method = "Runtime.evaluate",
-            @params = new
+            int id = ++_msgId;
+            var payload = new
             {
-                expression,
-                returnByValue = true,
-                awaitPromise,
-                userGesture = true
+                id,
+                method = "Runtime.evaluate",
+                @params = new
+                {
+                    expression,
+                    returnByValue = true,
+                    awaitPromise,
+                    userGesture = true
+                }
+            };
+
+            byte[] bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload));
+            Ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None)
+               .GetAwaiter().GetResult();
+
+            var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            var buffer = new byte[1 << 20];
+            var sb = new StringBuilder();
+
+            while (DateTime.UtcNow < deadline)
+            {
+                sb.Clear();
+                WebSocketReceiveResult res;
+                do
+                {
+                    var seg = new ArraySegment<byte>(buffer);
+                    var task = Ws.ReceiveAsync(seg, CancellationToken.None);
+                    if (!task.Wait(Math.Max(1, (int)(deadline - DateTime.UtcNow).TotalMilliseconds)))
+                        throw new TimeoutException("CDP 响应超时");
+                    res = task.Result;
+                    sb.Append(Encoding.UTF8.GetString(buffer, 0, res.Count));
+                } while (!res.EndOfMessage);
+
+                using var doc = JsonDocument.Parse(sb.ToString());
+                var root = doc.RootElement;
+
+                // 跳过事件推送，只处理我们这次的响应
+                if (!root.TryGetProperty("id", out var rid) || rid.GetInt32() != id) continue;
+
+                if (root.TryGetProperty("error", out var err))
+                    throw new InvalidOperationException("CDP 错误：" + err.GetRawText());
+
+                var result = root.GetProperty("result");
+                if (result.TryGetProperty("exceptionDetails", out var ex))
+                    throw new InvalidOperationException("页面异常：" + ex.GetRawText());
+
+                if (!result.TryGetProperty("result", out var value)) return null;
+                return value.TryGetProperty("value", out var v)
+                    ? (v.ValueKind == JsonValueKind.String ? v.GetString() : v.GetRawText())
+                    : (value.TryGetProperty("description", out var d) ? d.GetString() : null);
             }
-        };
-
-        byte[] bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload));
-        _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None)
-           .GetAwaiter().GetResult();
-
-        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
-        var buffer = new byte[1 << 20];
-        var sb = new StringBuilder();
-
-        while (DateTime.UtcNow < deadline)
-        {
-            sb.Clear();
-            WebSocketReceiveResult res;
-            do
-            {
-                var seg = new ArraySegment<byte>(buffer);
-                var task = _ws.ReceiveAsync(seg, CancellationToken.None);
-                if (!task.Wait(Math.Max(1, (int)(deadline - DateTime.UtcNow).TotalMilliseconds)))
-                    throw new TimeoutException("CDP 响应超时");
-                res = task.Result;
-                sb.Append(Encoding.UTF8.GetString(buffer, 0, res.Count));
-            } while (!res.EndOfMessage);
-
-            using var doc = JsonDocument.Parse(sb.ToString());
-            var root = doc.RootElement;
-
-            // 跳过事件推送，只处理我们这次的响应
-            if (!root.TryGetProperty("id", out var rid) || rid.GetInt32() != id) continue;
-
-            if (root.TryGetProperty("error", out var err))
-                throw new InvalidOperationException("CDP 错误：" + err.GetRawText());
-
-            var result = root.GetProperty("result");
-            if (result.TryGetProperty("exceptionDetails", out var ex))
-                throw new InvalidOperationException("页面异常：" + ex.GetRawText());
-
-            if (!result.TryGetProperty("result", out var value)) return null;
-            return value.TryGetProperty("value", out var v)
-                ? (v.ValueKind == JsonValueKind.String ? v.GetString() : v.GetRawText())
-                : (value.TryGetProperty("description", out var d) ? d.GetString() : null);
+            throw new TimeoutException("CDP 响应超时");
         }
-        throw new TimeoutException("CDP 响应超时");
     }
 
     public void Dispose()
     {
-        try { _ws?.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None).Wait(2000); } catch { }
-        _ws?.Dispose();
+        lock (_ioLock)
+        {
+            try { Ws?.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None).Wait(2000); } catch { }
+            Ws?.Dispose();
+        }
     }
 }
