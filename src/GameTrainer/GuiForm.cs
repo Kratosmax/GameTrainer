@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using GameTrainer.Adapter;
 using GameTrainer.Core;
+using GameTrainer.Core.Updates;
 using GameTrainer.Engine;
 using GameTrainer.Memory;
 using GameTrainer.Native;
@@ -101,6 +102,7 @@ internal sealed class GuiForm : Form
         _activeStore = new ActiveStateStore(skillRoot);
 
         Text = "GameTrainer — 单机游戏修改器";
+        AppIcon.Apply(this);   // 标题栏 / 任务栏 / Alt+Tab 用程序自身图标
         BackColor = Tokens.PageBack;
         ForeColor = Tokens.TextPrimary;
         Font = Tokens.FontBody;
@@ -119,10 +121,55 @@ internal sealed class GuiForm : Form
             InitHotkeys();
             RefreshStartupStatus();
             CheckResidueOnStartup();
+            ScheduleAutoUpdateCheck();
         };
 
         FormClosing += OnFormClosing;
     }
+    /// <summary>
+    /// 启动后延迟 3 秒做一次更新检查。
+    ///
+    /// 为什么延迟：启动瞬间要读配置、建界面、加载适配包，
+    /// 这时发网络请求会拖慢首屏；窗口没画完就弹窗体验也差。
+    ///
+    /// 为什么静默失败：没网、被墙、GitHub 挂了都不该打扰用户——
+    /// 更新是锦上添花，不是启动的必要条件。只有真发现新版本才提示。
+    /// </summary>
+    private void ScheduleAutoUpdateCheck()
+    {
+        var prefs = UpdatePrefs.Load();
+        if (!prefs.AutoCheck) return;
+
+        var timer = new System.Windows.Forms.Timer { Interval = 3000 };
+        timer.Tick += async (_, _) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+
+            try
+            {
+                string channel = Trust.CurrentChannel;
+                string url = UpdateClient.ManifestUrlFor(channel);
+                var r = await Task.Run(() => UpdateClient.CheckAsync(AppVersion.Full, channel, url));
+
+                if (!r.HasUpdate) return;
+                if (prefs.IsSkipped(r.Latest.Version)) return;
+                if (IsDisposed || !IsHandleCreated) return;
+
+                Log($"发现新版本 {r.Latest.Version.ToString(3)}（当前 {AppVersion.Display}）");
+                using var dlg = new UpdateDialog(r.Latest, prefs);
+                dlg.ShowDialog(this);
+
+                if (dlg.ReadyToRestart) Application.Exit();
+            }
+            catch
+            {
+                // 静默：启动时的更新检查失败不打扰用户
+            }
+        };
+        timer.Start();
+    }
+
 
     /// <summary>
     /// HWND 就绪后才应用材质。OnHandleCreated 早于首次绘制，
@@ -661,7 +708,7 @@ internal sealed class GuiForm : Form
 
     private void BuildTray()
     {
-        _tray.Icon = SystemIcons.Application;
+        _tray.Icon = AppIcon.Get(16);   // 托盘要 16x16，用程序自身图标
         _tray.Text = "GameTrainer";
         _tray.Visible = true;
         _tray.DoubleClick += (_, _) => RestoreFromTray();

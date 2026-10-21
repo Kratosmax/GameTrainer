@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using GameTrainer.Core;
+using GameTrainer.Core.Updates;
 using GameTrainer.UI;
 
 namespace GameTrainer;
@@ -35,7 +36,7 @@ internal sealed class SettingsForm : Form
 
     public SettingsForm(string skillRoot)
     {
-        _skillRoot = skillRoot;
+        _skillRoot = skillRoot;            AppIcon.Apply(this);
 
         Text = "设置";
         BackColor = Tokens.PageBack;
@@ -586,8 +587,160 @@ internal sealed class SettingsForm : Form
            + "该命令只在当前值恰好等于本工具写入的值时才还原，避免覆盖你后续的正常进度。");
     }
 
+    // ---- 更新区（关于页最上方） ----
+
+    private CheckBox _autoUpdateBox;
+    private Label _updateStatus;
+    private FlatButton _checkUpdateBtn;
+    private readonly UpdatePrefs _updatePrefs = UpdatePrefs.Load();
+
+    /// <summary>
+    /// 更新区：自动检查开关 + 当前版本 + 状态 + 检查按钮。
+    /// 结构照 PinNote 的设置页更新小节。
+    /// </summary>
+    private void RenderUpdateSection()
+    {
+        Title("更新");
+
+        var row = new Panel
+        {
+            Width = ContentWidth,
+            Height = 32,
+            Margin = new Padding(0, 0, 0, Tokens.S1),
+            BackColor = Tokens.Surface
+        };
+
+        _autoUpdateBox = new CheckBox
+        {
+            Text = "启动时自动检查更新",
+            Checked = _updatePrefs.AutoCheck,
+            AutoSize = true,
+            Font = Tokens.FontBody,
+            ForeColor = Tokens.TextPrimary,
+            BackColor = Tokens.Surface,
+            Location = new Point(0, 6)
+        };
+        _autoUpdateBox.CheckedChanged += (_, _) =>
+        {
+            _updatePrefs.AutoCheck = _autoUpdateBox.Checked;
+            _updatePrefs.Save();
+        };
+
+        var ver = new Label
+        {
+            Text = "当前版本 " + AppVersion.Display,
+            Font = Tokens.FontCaption,
+            ForeColor = Tokens.TextMuted,
+            AutoSize = true,
+            BackColor = Tokens.Surface,
+            Location = new Point(220, 9)
+        };
+
+        row.Controls.Add(_autoUpdateBox);
+        row.Controls.Add(ver);
+        _flow.Controls.Add(row);
+
+        _updateStatus = new Label
+        {
+            Text = "点「检查更新」查看是否有新版本",
+            Font = Tokens.FontCaption,
+            ForeColor = Tokens.TextMuted,
+            AutoSize = false,
+            Width = ContentWidth,
+            Height = 34,
+            TextAlign = ContentAlignment.TopLeft,
+            Margin = new Padding(220, 0, 0, Tokens.S2),
+            BackColor = Tokens.Surface
+        };
+        _flow.Controls.Add(_updateStatus);
+
+        var btnRow = new FlowLayoutPanel
+        {
+            Width = ContentWidth,
+            Height = 38,
+            FlowDirection = FlowDirection.RightToLeft,
+            BackColor = Tokens.Surface,
+            Margin = new Padding(0, 0, 0, Tokens.S2)
+        };
+        _checkUpdateBtn = new FlatButton
+        {
+            Text = "检查更新",
+            Kind = ButtonKind.Secondary,
+            Width = 100,
+            Height = 34
+        };
+        _checkUpdateBtn.Click += async (_, _) => await CheckUpdateAsync();
+        btnRow.Controls.Add(_checkUpdateBtn);
+        _flow.Controls.Add(btnRow);
+    }
+
+    /// <summary>
+    /// 检查更新。失败时只写状态文字，不弹框——没网就弹错误很烦。
+    /// </summary>
+    private async Task CheckUpdateAsync()
+    {
+        _checkUpdateBtn.Enabled = false;
+        _checkUpdateBtn.Text = "检查中…";
+        _updateStatus.Text = "正在连接 GitHub…";
+        _updateStatus.ForeColor = Tokens.TextMuted;
+
+        try
+        {
+            string channel = Trust.CurrentChannel;
+            string url = UpdateClient.ManifestUrlFor(channel);
+            Version current = AppVersion.Full;
+
+            var result = await Task.Run(() => UpdateClient.CheckAsync(current, channel, url));
+
+            if (!result.HasUpdate)
+            {
+                _updateStatus.Text = result.Message;
+                _updateStatus.ForeColor = Tokens.Success;
+                return;
+            }
+
+            if (_updatePrefs.IsSkipped(result.Latest.Version))
+            {
+                _updateStatus.Text = $"新版本 {result.Latest.Version.ToString(3)} 已被跳过";
+                _updateStatus.ForeColor = Tokens.TextMuted;
+                return;
+            }
+
+            _updateStatus.Text = result.Message;
+            _updateStatus.ForeColor = Tokens.Accent;
+
+            using var dlg = new UpdateDialog(result.Latest, _updatePrefs);
+            dlg.ShowDialog(this);
+
+            if (dlg.ReadyToRestart)
+                Application.Exit();   // 更新器已在等本进程退出
+        }
+        catch (Exception ex)
+        {
+            _updateStatus.Text = "检查失败：" + FirstLine(ex.Message);
+            _updateStatus.ForeColor = Tokens.Danger;
+        }
+        finally
+        {
+            _checkUpdateBtn.Enabled = true;
+            _checkUpdateBtn.Text = "检查更新";
+        }
+    }
+
+    /// <summary>多行错误只取第一行，状态区放不下整段。</summary>
+    private static string FirstLine(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return "未知错误";
+        int i = s.IndexOfAny(new[] { '\r', '\n' });
+        return i < 0 ? s : s[..i];
+    }
+
     private void RenderAbout()
     {
+        // 更新区放最上面：这是用户来到「关于」页最常做的事
+        RenderUpdateSection();
+
+        Gap();
         Title("GameTrainer");
         Body("单机游戏内存 / 存档修改器 · 统一入口", Tokens.TextPrimary);
         Gap(Tokens.S2);
@@ -595,7 +748,7 @@ internal sealed class SettingsForm : Form
         Body("运行环境    Windows 10 / 11 x64，.NET 8");
         Body("权限要求    普通用户即可读写同用户、同完整性级别的进程");
         Body("提权场景    仅当目标游戏本身以管理员身份运行时");
-        Body("隐私        全部数据留在本机，无任何联网行为");
+        Body("隐私        除更新检查外无联网行为，游戏数据全部留在本机");
 
         Gap();
         Title("自检");

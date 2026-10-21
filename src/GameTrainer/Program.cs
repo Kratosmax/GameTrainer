@@ -42,14 +42,20 @@ internal static class Program
 
     private static int Main(string[] args)
     {
+        // 隐藏控制台必须放在最前面，在任何 Console 操作与初始化之前。
+        //
+        // 为什么：本程序是 Exe（控制台子系统）——这样 CLI 用法下 stdout 重定向
+        // 才可用（WinExe 下 `> out.txt` 是 0 字节，实测过）。
+        // 代价是双击时 Windows 会先创建一个控制台窗口。
+        //
+        // 无参数 = 双击启动 → 立刻隐藏，把闪烁压到最短。
+        // 有参数 = CLI → 保留控制台，AI/脚本要用。
+        if (args.Length == 0) HideConsoleWindow();
+
         _skillRoot = ResolveSkillRoot();
 
-        // 无参数 = 双击启动：隐藏黑框后直接进 GUI
         if (args.Length == 0)
-        {
-            HideConsoleWindow();
             return GuiForm.Run(_skillRoot);
-        }
 
         // 有参数 = 命令行用法，保留控制台与标准输出。
         // 只设定 UTF-8 编码，不重建 Console 流（Exe 子系统下流本身是好的）。

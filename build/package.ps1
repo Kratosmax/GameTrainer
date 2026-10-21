@@ -81,6 +81,27 @@ foreach ($ch in $channels) {
     & dotnet @publishArgs
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish 失败（$ch）" }
 
+    # 更新器必须独立发布再合并进同一目录。
+    # 它是单独的 exe：主程序运行时无法替换自己的文件，必须靠它退出后动手。
+    $updaterArgs = @(
+        'publish', (Join-Path $repoRoot "src/GameTrainer.Updater/GameTrainer.Updater.csproj"),
+        '-c', 'Release',
+        '-o', $stage,
+        "-p:GameTrainerVersion=$version"
+    )
+    if ($ch -eq 'Full') {
+        $updaterArgs += @('-r', 'win-x64', '--self-contained', 'true')
+    }
+    else {
+        # Lite 不能把主程序自带的 .NET 再复制一遍，用共享运行时
+        $updaterArgs += @('--self-contained', 'false')
+    }
+    & dotnet @updaterArgs
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish 失败（$ch，更新器）" }
+
+    $updaterExe = Join-Path $stage "GameTrainer.Updater.exe"
+    if (-not (Test-Path $updaterExe)) { throw "打包后缺少 GameTrainer.Updater.exe（$ch）" }
+
     # 调试符号不进发行包
     Get-ChildItem $stage -Filter *.pdb -File -ErrorAction SilentlyContinue | Remove-Item -Force
 

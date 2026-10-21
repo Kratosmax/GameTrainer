@@ -7,6 +7,8 @@
          命令行是本工具的主要用法，不能牺牲。
          双击闪黑框由 Program.HideOwnConsoleIfLaunchedByExplorer() 处理。 -->
     <OutputType>Exe</OutputType>
+    <!-- exe 图标：由 tools/IconGen 生成，与 GUI 品牌方标同色 -->
+    <ApplicationIcon>..\..\assets\gametrainer.ico</ApplicationIcon>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>disable</Nullable>
@@ -29,6 +31,8 @@
     <!-- 测试项目需要访问 internal 的纯函数类（AobPattern / ValueCodec / Semantics 等）。
          只开放给测试程序集，不改变生产代码的可见性。 -->
     <InternalsVisibleTo Include="GameTrainer.Tests" />
+  <!-- 更新器需要复用清单验签、事务安装与信任根，不重复实现一遍 -->
+  <InternalsVisibleTo Include="GameTrainer.Updater" />
   </ItemGroup>
 
 </Project>
