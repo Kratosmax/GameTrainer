@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 
@@ -12,7 +13,85 @@ namespace GameTrainer.Core.Updates;
 /// </summary>
 internal static class UpdateClient
 {
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(30) };
+    /// <summary>
+    /// 走系统代理的 HttpClient。
+    ///
+    /// 为什么必须显式配：国内直连 github.com 常被 RST/超时（实测 15s 无响应），
+    /// 而 .NET 默认虽然会读 HTTPS_PROXY 环境变量，但**不读 Windows 系统代理设置**。
+    /// 用户开了 Clash/V2Ray 而没设环境变量时，更新会卡满超时才报错，
+    /// 表现得像"程序坏了"。
+    /// </summary>
+    private static readonly HttpClient Http = CreateHttpClient();
+
+    /// <summary>
+    /// 供 UpdateInstaller 复用的 handler。
+    /// 必须共用同一套代理解析——检查走代理、下载走直连是最难排查的失败。
+    /// </summary>
+    internal static HttpClientHandler ProxyHandler => new()
+    {
+        UseProxy = true,
+        Proxy = ResolveProxy(),
+        AllowAutoRedirect = true,
+        MaxAutomaticRedirections = 5
+    };
+
+    private static HttpClient CreateHttpClient()
+        => new(new HttpClientHandler
+        {
+            UseProxy = true,
+            Proxy = ResolveProxy(),
+            // 重定向跟随：releases/latest/download 会跳到 objects.githubusercontent.com
+            AllowAutoRedirect = true,
+            MaxAutomaticRedirections = 5
+        })
+        { Timeout = TimeSpan.FromSeconds(30) };
+
+    /// <summary>
+    /// 解析代理：环境变量优先，其次系统代理。
+    /// 两者都没有时返回 null，走直连（直连失败时错误提示会告诉用户怎么办）。
+    /// </summary>
+    private static IWebProxy ResolveProxy()
+    {
+        // 1) 环境变量（HTTPS_PROXY / HTTP_PROXY / ALL_PROXY），大小写都试
+        foreach (string name in new[] { "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy" })
+        {
+            string v = Environment.GetEnvironmentVariable(name);
+            if (!string.IsNullOrWhiteSpace(v) &&
+                Uri.TryCreate(v, UriKind.Absolute, out var envUri))
+                return new WebProxy(envUri);
+        }
+
+        // 2) 系统代理（代理客户端勾了"系统代理"时会写 WinINET 设置）
+        var sys = System.Net.WebRequest.DefaultWebProxy;
+        if (sys != null && !sys.IsBypassed(new Uri("https://github.com")))
+            return sys;
+
+        // 3) 探测常见本地代理端口。
+        //
+        // 这一步不是多余的：实测本机 Clash 跑在规则/TUN 模式，
+        // ProxyEnable = 0（系统代理开关是关的），环境变量也没设。
+        // 用户明明开着代理，程序却提示"超时"——看起来像程序坏了。
+        // 只探测回环地址，不扫描网络。
+        foreach (int port in new[] { 10808, 7890, 10809, 2080, 8889 })
+        {
+            if (IsLocalPortOpen(port))
+                return new WebProxy(new Uri($"http://127.0.0.1:{port}"));
+        }
+
+        return null;
+    }
+
+    /// <summary>本机回环端口是否在监听。超时必须短，不能让探测拖慢启动。</summary>
+    private static bool IsLocalPortOpen(int port)
+    {
+        try
+        {
+            using var client = new System.Net.Sockets.TcpClient();
+            var task = client.ConnectAsync("127.0.0.1", port);
+            return task.Wait(TimeSpan.FromMilliseconds(200)) && client.Connected;
+        }
+        catch { return false; }
+    }
 
     public sealed record CheckResult(
         bool HasUpdate,
@@ -47,6 +126,25 @@ internal static class UpdateClient
                 throw new InvalidDataException($"清单大小 {len.Value} 超过上限。");
 
             json = await resp.Content.ReadAsStringAsync(ct);
+        }
+        catch (TaskCanceledException ex)
+        {
+            // 超时是最常见的失败：国内直连 GitHub 时几乎必然发生。
+            // 光说"超时"用户不知道怎么办，必须给出可操作的建议。
+            throw new InvalidOperationException(
+                "获取更新清单超时。\n" +
+                "常见原因：所在网络无法直连 GitHub。\n" +
+                "可尝试：\n" +
+                "  1. 开启代理软件（Clash / V2Ray 等）后重试\n" +
+                "  2. 设置环境变量 HTTPS_PROXY=http://127.0.0.1:<端口>\n" +
+                "  3. 手动到 https://github.com/Kratosmax/GameTrainer/releases 下载",
+                ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new InvalidOperationException(
+                $"获取更新清单失败：{ex.Message}\n" +
+                "若为网络受限，请开启代理后重试，或手动到 Release 页面下载。", ex);
         }
         catch (Exception ex) when (ex is not InvalidDataException)
         {

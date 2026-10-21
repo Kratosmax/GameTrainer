@@ -25,7 +25,13 @@ internal static class UpdateInstaller
         Directory.CreateDirectory(tempRoot);
         string path = Path.Combine(tempRoot, $"update-{update.Version}-{Guid.NewGuid():N}.zip");
 
-        using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+        // 与 UpdateClient 用同一套代理解析：检查能过、下载却失败是最难排查的错。
+        using var http = new HttpClient(UpdateClient.ProxyHandler)
+        {
+            // 下载大文件不能用总超时，否则 Full 包（63MB）在慢网下必然中断。
+            // 改用每读一次的超时（见下方 ReadAsync 的 ct 与 StalledTimeoutMs）。
+            Timeout = Timeout.InfiniteTimeSpan
+        };
         using var request = new HttpRequestMessage(HttpMethod.Get, update.DownloadUri);
         using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
 
