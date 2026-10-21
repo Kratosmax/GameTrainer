@@ -97,12 +97,14 @@ public class DataRootResolutionTests
     [Fact]
     public void 工程根同时有数据且像仓库_采用()
     {
-        string baseDir = @"F:\git\temp\game-trainer\temp\build\GameTrainer\Release\net8.0-windows";
-        string repoRoot = @"F:\git\temp\game-trainer";
+        // 注意：不能硬编码本机路径。CI 上仓库在 D:\a\GameTrainer\GameTrainer，
+        // 硬编码 F:\ 会让 DirectoryInfo 拿不到父链，测试只在开发机通过。
+        string repoRoot = Path.Combine(Path.GetTempPath(), "gt-repo-" + Guid.NewGuid().ToString("N")[..8]);
+        string baseDir = Path.Combine(repoRoot, "temp", "build", "GameTrainer", "Release", "net8.0-windows");
 
         var root = Resolve(baseDir,
             hasData: p => p == Path.Combine(repoRoot, "adapters"),
-            looksLikeRepo: p => File.Exists(Path.Combine(p, "GameTrainer.sln")) || Directory.Exists(Path.Combine(p, "src")));
+            looksLikeRepo: p => p == repoRoot);
 
         Assert.Equal(repoRoot, root);
     }
