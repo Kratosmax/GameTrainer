@@ -1,0 +1,189 @@
+{
+    "id":  "hospitalrhapsody",
+    "name":  "Hospital Rhapsody",
+    "engine":  "native_memory",
+    "exe":  "Hospital Rhapsody.exe",
+    "mode":  "allow",
+    "installDir":  "F:\\Game\\Hospital Rhapsody",
+    "connection":  {
+                       "debugPort":  0,
+                       "titleFilter":  ""
+                   },
+    "engineOptions":  {
+                          "runtimePath":  "",
+                          "localStorageDb":  "",
+                          "objectStore":  ""
+                      },
+    "bindings":  [
+                     {
+                         "semantic":  "gold_total",
+                         "kind":  "memory_collection",
+                         "dictOffset":  "0x88",
+                         "levelOffset":  "0x2C",
+                         "minLevel":  1,
+                         "maxLevel":  99,
+                         "goldOffset":  "0x40",
+                         "maxGold":  100000000,
+                         "anchorIds":  [
+                                           1001,
+                                           2500
+                                       ],
+                         "fieldOffset":  "0x40",
+                         "ownerField":  true,
+                         "entryIdOffset":  "0x10",
+                         "minEntryId":  1000,
+                         "maxEntryId":  9999,
+                         "entryStride":  "0x18",
+                         "entryValueOffset":  "0x10",
+                         "dictCountOffset":  "0x20",
+                         "dictEntriesOffset":  "0x18",
+                         "type":  "int32",
+                         "valueType":  "number",
+                         "range":  [
+                                       0,
+                                       2000000000
+                                   ],
+                         "realtime":  true,
+                         "style":  "number",
+                         "note":  "总资产在 Userdata +0x40。集合绑定借用同一套定位逻辑（锚点员工 1001/2500），但 fieldOffset 指主体本身，实际写入由 gold 语义单独处理",
+                         "nameTableEntries":  "0x2029EF72ED8",
+                         "staticNameIndexOffset":  "0x18",
+                         "staticIdOffset":  "0x10",
+                         "staticAgeOffset":  "0x58",
+                         "staticTypeOffset":  "0x14"
+                     },
+                     {
+                         "semantic":  "employee_good",
+                         "kind":  "memory_collection",
+                         "dictOffset":  "0x88",
+                         "levelOffset":  "0x2C",
+                         "minLevel":  1,
+                         "maxLevel":  99,
+                         "goldOffset":  "0x40",
+                         "maxGold":  100000000,
+                         "anchorIds":  [
+                                           1001,
+                                           2500
+                                       ],
+                         "fieldOffset":  "0x18",
+                         "entryIdOffset":  "0x10",
+                         "minEntryId":  1000,
+                         "maxEntryId":  9999,
+                         "entryStride":  "0x18",
+                         "entryValueOffset":  "0x10",
+                         "dictCountOffset":  "0x20",
+                         "dictEntriesOffset":  "0x18",
+                         "type":  "int32",
+                         "valueType":  "number",
+                         "range":  [
+                                       0,
+                                       9999
+                                   ],
+                         "realtime":  true,
+                         "style":  "number",
+                         "note":  "员工好感度。Useremployee +0x18。条目增减自动跟随，无需改适配包",
+                         "nameTableEntries":  "0x2029EF72ED8",
+                         "staticNameIndexOffset":  "0x18",
+                         "staticIdOffset":  "0x10",
+                         "staticAgeOffset":  "0x58",
+                         "staticTypeOffset":  "0x14"
+                     },
+                     {
+                         "semantic":  "employee_bad",
+                         "kind":  "memory_collection",
+                         "dictOffset":  "0x88",
+                         "levelOffset":  "0x2C",
+                         "minLevel":  1,
+                         "maxLevel":  99,
+                         "goldOffset":  "0x40",
+                         "maxGold":  100000000,
+                         "anchorIds":  [
+                                           1001,
+                                           2500
+                                       ],
+                         "fieldOffset":  "0x1C",
+                         "entryIdOffset":  "0x10",
+                         "minEntryId":  1000,
+                         "maxEntryId":  9999,
+                         "entryStride":  "0x18",
+                         "entryValueOffset":  "0x10",
+                         "dictCountOffset":  "0x20",
+                         "dictEntriesOffset":  "0x18",
+                         "type":  "int32",
+                         "valueType":  "number",
+                         "range":  [
+                                       0,
+                                       9999
+                                   ],
+                         "realtime":  true,
+                         "style":  "number",
+                         "note":  "员工猥琐值。Useremployee +0x1C",
+                         "nameTableEntries":  "0x2029EF72ED8",
+                         "staticNameIndexOffset":  "0x18",
+                         "staticIdOffset":  "0x10",
+                         "staticAgeOffset":  "0x58",
+                         "staticTypeOffset":  "0x14"
+                     },
+                     {
+                         "semantic":  "employee_medical",
+                         "kind":  "memory_collection",
+                         "dictOffset":  "0x88",
+                         "levelOffset":  "0x2C",
+                         "minLevel":  1,
+                         "maxLevel":  99,
+                         "goldOffset":  "0x40",
+                         "maxGold":  100000000,
+                         "anchorIds":  [
+                                           1001,
+                                           2500
+                                       ],
+                         "fieldOffset":  "0x30",
+                         "entryIdOffset":  "0x10",
+                         "minEntryId":  1000,
+                         "maxEntryId":  9999,
+                         "entryStride":  "0x18",
+                         "entryValueOffset":  "0x10",
+                         "dictCountOffset":  "0x20",
+                         "dictEntriesOffset":  "0x18",
+                         "type":  "int32",
+                         "valueType":  "number",
+                         "range":  [
+                                       0,
+                                       999
+                                   ],
+                         "realtime":  true,
+                         "style":  "number",
+                         "note":  "员工医术。注意：实例对象上也有同名字段，若改实例不生效需改静态表 Dictemployee +0x30",
+                         "nameTableEntries":  "0x2029EF72ED8",
+                         "staticNameIndexOffset":  "0x18",
+                         "staticIdOffset":  "0x10",
+                         "staticAgeOffset":  "0x58",
+                         "staticFieldOffset":  "0x30",
+                         "staticMinValue":  0,
+                         "staticMaxValue":  999,
+                         "staticTypeOffset":  "0x14"
+                     }
+                 ],
+    "notes":  {
+                  "stack":  "Unity 2022.3.62 + IL2CPP v31",
+                  "steps":  [
+                                "1. Il2CppDumper 导出 dump.cs，得到完整类结构与字段偏移",
+                                "2. PlayerData +0x48 = Userdata；Userdata +0x2C 等级 / +0x30 经验 / +0x40 总资产 / +0x88 myEmployees",
+                                "3. myEmployees 是 Dictionary\u003cint,Useremployee\u003e；Entry 步长 0x18，value 指针在 +0x10",
+                                "4. Useremployee +0x10 employeeid / +0x18 curgood(好感) / +0x1C curbad(猥琐)",
+                                "5. 名字：Dictionary\u003cint,string\u003e 表，key = Dictemployee +0x18 的 ename；value 是 UTF-16 字符串对象（+0x10 长度，+0x14 数据）",
+                                "6. 定位主体：内存里有 244 个结构相似的 Userdata 副本，只有含员工 1001/2500 的才是正在玩的存档"
+                            ],
+                  "pitfalls":  [
+                                   "Unity IL2CPP 托管堆地址每次启动都变，AOB 与固定指针链都不可行 —— 必须每次现场扫描",
+                                   "Dictionary 的 Entry 步长是 0x18 不是 0x20；按 hashCode==-1 过滤槽位会漏掉真实条目（曾漏掉林语溪）",
+                                   "读档后所有地址失效，工具会自动重新扫描，无需手动干预",
+                                   "存档文件是 Base64+AES 加密（熵 8.0），不可手改；只能改运行时内存"
+                               ],
+                  "keyFindings":  [
+                                      "员工会增减：主角团固定增加，临时员工会被开除 —— 集合语义必须动态遍历",
+                                      "医术在静态表 Dictemployee +0x30 上，改一个员工影响所有同 ID 实例",
+                                      "总资产一直在涨（经营收入），扫描时要用范围而非精确值"
+                                  ]
+              }
+}

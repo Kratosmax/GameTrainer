@@ -82,7 +82,11 @@ internal sealed class GameAdapter
         {
             if (string.IsNullOrWhiteSpace(b.Semantic)) { errs.Add("binding.semantic 不能为空"); continue; }
             if (!seen.Add(b.Semantic)) errs.Add($"语义重复: {b.Semantic}");
-            if (!Semantics.IsKnown(b.Semantic))
+
+            // 集合语义（memory_collection）覆盖的是「一组条目」，不属于固定单值语义表，
+            // 允许自定义名字（如 employee_good）。其它 kind 仍要求语义在白名单内。
+            bool isCollectionKind = string.Equals(b.Kind, "memory_collection", StringComparison.OrdinalIgnoreCase);
+            if (!isCollectionKind && !Semantics.IsKnown(b.Semantic))
                 errs.Add($"未知语义 {b.Semantic}（已知: {string.Join(", ", Semantics.All.Keys)}）");
 
             switch (b.Kind)
@@ -94,6 +98,17 @@ internal sealed class GameAdapter
                 case "indexeddb_key":
                     if (string.IsNullOrWhiteSpace(b.StorageKey))
                         errs.Add($"{b.Semantic}: indexeddb_key 需要 storageKey");
+                    break;
+                case "memory_collection":
+                    // 集合绑定必须能定位主体、能定位字段、能区分存档副本。
+                    // anchorIds 是最关键的一条：内存里常有多个结构相同的 Userdata 副本，
+                    // 没有锚点就只能靠猜（实测 244 个候选都无法可靠区分）。
+                    if (string.IsNullOrWhiteSpace(b.DictOffset))
+                        errs.Add($"{b.Semantic}: memory_collection 需要 dictOffset");
+                    if (string.IsNullOrWhiteSpace(b.FieldOffset))
+                        errs.Add($"{b.Semantic}: memory_collection 需要 fieldOffset");
+                    if (b.AnchorIds == null || b.AnchorIds.Count == 0)
+                        errs.Add($"{b.Semantic}: memory_collection 需要至少一个 anchorIds（用于定位存档副本）");
                     break;
                 case "memory_aob":
                     // aob 与 chain 二选一，不能都给（给了也没意义，语义冲突）
@@ -260,6 +275,100 @@ internal sealed class ValueBinding
 
     /// <summary>数值类型：number | string。默认 number。</summary>
     public string ValueType { get; set; } = "number";
+
+    // ---- memory_collection 专用（集合语义：一次绑定覆盖字典里的全部条目）----
+
+    /// <summary>主体对象里字典字段的偏移，如 "0x88"。</summary>
+    public string DictOffset { get; set; }
+
+    /// <summary>主体对象里等级字段的偏移，如 "0x2C"。</summary>
+    public string LevelOffset { get; set; }
+
+    /// <summary>等级最小值（含）。</summary>
+    public int MinLevel { get; set; } = 1;
+
+    /// <summary>等级最大值（含）。</summary>
+    public int MaxLevel { get; set; } = 99;
+
+    /// <summary>主体对象里资产字段的偏移，如 "0x40"。</summary>
+    public string GoldOffset { get; set; }
+
+    /// <summary>资产上限，超过视为异常数据。</summary>
+    public long MaxGold { get; set; } = 100_000_000;
+
+    /// <summary>锚点条目 ID：真实存档必然包含这些 ID，用于区分内存里的其它副本。</summary>
+    public List<int> AnchorIds { get; set; } = new();
+
+    /// <summary>目标字段在条目对象里的偏移，如好感度 "0x18"。</summary>
+    public string FieldOffset { get; set; }
+
+    /// <summary>
+    /// true = fieldOffset 相对主体对象而非条目对象。
+    /// 用于总资产这类单值字段（Userdata+0x40）：它们借用同一套存档定位逻辑，
+    /// 但不是集合里的元素。
+    /// </summary>
+    public bool OwnerField { get; set; }
+
+    // ---- memory_collection 二级查找（字段在按 ID 关联的静态表上）----
+
+    /// <summary>静态表里目标字段的偏移。留空表示字段就在条目对象上。</summary>
+    public string StaticFieldOffset { get; set; }
+
+    /// <summary>静态表里 ID 字段的偏移。</summary>
+    public string StaticIdOffset { get; set; } = "0x10";
+
+    /// <summary>静态表里名字索引字段的偏移（如 ename = 0x18）。0 表示没有。</summary>
+    public string StaticNameIndexOffset { get; set; }
+
+    /// <summary>静态表里年龄字段的偏移，用于排除误命中。</summary>
+    public string StaticAgeOffset { get; set; }
+
+    /// <summary>
+    /// 静态表里类型字段的偏移（Dictemployee +0x14 = employeetype）。
+    /// 必须配：不加这一项会命中内存里其它含相同 ID 的对象，名字和数值全错
+    /// （实测 1001 会显示成别人的名字）。
+    /// </summary>
+    public string StaticTypeOffset { get; set; }
+
+    /// <summary>静态字段值的合理范围。</summary>
+    public int StaticMinValue { get; set; }
+    public int StaticMaxValue { get; set; } = 9999;
+
+    // ---- 名字表（把名字索引映射成显示名）----
+
+    /// <summary>名字表 entries 的地址（十六进制）。0 表示不解析名字。</summary>
+    public string NameTableEntries { get; set; }
+
+    /// <summary>名字表 entry 步长。</summary>
+    public string NameEntryStride { get; set; } = "0x18";
+
+    /// <summary>名字表 entry 里 key 的偏移。</summary>
+    public string NameKeyOffset { get; set; } = "0x08";
+
+    /// <summary>名字表 entry 里 value 指针的偏移。</summary>
+    public string NameValueOffset { get; set; } = "0x10";
+
+    /// <summary>扫描多少个名字条目。</summary>
+    public int NameScanCount { get; set; } = 500;
+
+    /// <summary>条目 ID 字段的偏移。</summary>
+    public string EntryIdOffset { get; set; } = "0x10";
+
+    /// <summary>条目 ID 的合理范围，用来排除内存垃圾。</summary>
+    public int MinEntryId { get; set; } = 1000;
+    public int MaxEntryId { get; set; } = 9999;
+
+    /// <summary>字典 entry 步长（实测 0x18）。</summary>
+    public string EntryStride { get; set; } = "0x18";
+
+    /// <summary>字典里 value 指针的偏移。</summary>
+    public string EntryValueOffset { get; set; } = "0x10";
+
+    /// <summary>字典 count 字段偏移。</summary>
+    public string DictCountOffset { get; set; } = "0x20";
+
+    /// <summary>字典 entries 指针偏移。</summary>
+    public string DictEntriesOffset { get; set; } = "0x18";
 
     /// <summary>允许区间。</summary>
     public double[] Range { get; set; }

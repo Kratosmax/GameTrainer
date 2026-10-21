@@ -1082,10 +1082,21 @@ internal static class Program
                 var results = AdapterRunner.Read(adapter, wanted);
                 foreach (var r in results)
                 {
-                    if (r.Ok)
-                        Console.WriteLine($"  {Semantics.Display(r.Semantic),-8} {r.Semantic,-16} = {r.Value,-12} ({r.Where})");
-                    else
+                    if (!r.Ok)
+                    {
                         Console.WriteLine($"  {Semantics.Display(r.Semantic),-8} {r.Semantic,-16} ! {r.Error}");
+                        continue;
+                    }
+
+                    Console.WriteLine($"  {Semantics.Display(r.Semantic),-8} {r.Semantic,-16} = {r.Value,-12} ({r.Where})");
+
+                    // 集合语义：逐条打印（如每个员工的好感度）。
+                    // 不打印就等于只有一个"11 个条目"的汇总，用户拿不到具体数值。
+                    if (r.Items is { Count: > 0 })
+                    {
+                        foreach (var it in r.Items)
+                            Console.WriteLine($"      {it.Id,-8} {it.Name,-14} {it.Value}");
+                    }
                 }
                 return 0;
             }

@@ -13,7 +13,17 @@ namespace GameTrainer.Adapter;
 /// </summary>
 internal static class AdapterRunner
 {
-    public sealed record ReadResult(string Semantic, bool Ok, string Value, string Where, string Error);
+    public sealed record ReadResult(string Semantic, bool Ok, string Value, string Where, string Error)
+{
+    /// <summary>
+    /// 集合语义的结果明细。每条是「条目ID → 名称 → 值」。
+    /// 为空表示这是普通单值绑定。
+    /// </summary>
+    public List<CollectionItem> Items { get; init; }
+}
+
+/// <summary>集合里的一个条目。</summary>
+public sealed record CollectionItem(int Id, string Name, string Value);
     public sealed record WriteResult(string Semantic, bool Ok, string Before, string After, bool Realtime, string Error);
 
     /// <summary>
@@ -26,12 +36,22 @@ internal static class AdapterRunner
     {
         var map = new Dictionary<string, ReadResult>(StringComparer.OrdinalIgnoreCase);
 
-        // memory_aob 不依赖 CDP：单独走内存后端，其余仍走 Web 路径。
+        // memory_aob 不依赖 CDP：单独走内存后端。
         var memBindings = adapter.Bindings.Where(b => b.Kind == "memory_aob").ToList();
         foreach (var b in memBindings)
             map[b.Semantic] = MemoryBackend.Read(adapter, b);
 
-        var webBindings = adapter.Bindings.Where(b => b.Kind != "memory_aob").ToList();
+        // memory_collection 同样不依赖 CDP，走集合后端。
+        // 必须在这里处理：否则它会被归入 webBindings，
+        // 再被下面的「引擎不是 construct3」判定整体拒绝
+        // （GUI 曾因此把全部集合语义显示成「读取尚未实现」）。
+        var colBindings = adapter.Bindings.Where(b => b.Kind == "memory_collection").ToList();
+        foreach (var b in colBindings)
+            map[b.Semantic] = CollectionRead(adapter, b);
+
+        var webBindings = adapter.Bindings
+            .Where(b => b.Kind != "memory_aob" && b.Kind != "memory_collection")
+            .ToList();
         if (webBindings.Count == 0) return map;
 
         if (adapter.Engine != "construct3")
@@ -207,8 +227,12 @@ internal static class AdapterRunner
     /// <summary>连接一次，批量读取多个语义。</summary>
     public static List<ReadResult> Read(GameAdapter adapter, IEnumerable<string> semantics)
     {
-        // 全部为 memory_aob 时不需要 CDP：游戏可能根本没开调试端口，不能因此失败
-        if (!semantics.Any(s => adapter.FindBinding(s)?.Kind != "memory_aob"))
+        // 两类内存型绑定都不需要 CDP：游戏可能根本没开调试端口，不能因此失败。
+        // memory_aob 与 memory_collection 都直接读写进程内存。
+        static bool NeedsCdp(ValueBinding b) =>
+            b != null && b.Kind is not ("memory_aob" or "memory_collection");
+
+        if (!semantics.Any(s => NeedsCdp(adapter.FindBinding(s))))
             return ReadOn(null, adapter, semantics);
 
         using var cdp = CdpClient.Connect(adapter.Connection.DebugPort, adapter.Connection.TitleFilter);
@@ -232,6 +256,11 @@ internal static class AdapterRunner
             if (mb?.Kind == "memory_aob")
             {
                 results.Add(MemoryBackend.Read(adapter, mb));
+                memWanted.Add(s);
+            }
+            else if (mb?.Kind == "memory_collection")
+            {
+                results.Add(CollectionRead(adapter, mb));
                 memWanted.Add(s);
             }
         }
@@ -318,7 +347,279 @@ internal static class AdapterRunner
     }
 
     /// <summary>按语义写值。dryRun 时只读前值不写。</summary>
-    public static WriteResult Write(GameAdapter adapter, string semantic, string rawValue, bool dryRun)
+        // ---------------- 集合语义（memory_collection） ----------------
+    //
+    // 一次绑定覆盖「一个字典里的全部条目」，用于员工列表这类会增减的数据。
+    // 每次操作都现场扫描定位，不缓存地址——读档或重开游戏后地址必变。
+
+    private static long ParseOff(string s)
+        => long.TryParse((s ?? "").Replace("0x", "").Replace("0X", ""),
+               System.Globalization.NumberStyles.HexNumber, null, out long v) ? v : -1;
+
+    private static CollectionBackend.Locator BuildLocator(ValueBinding b) => new()
+    {
+        DictOffset = ParseOff(b.DictOffset),
+        LevelOffset = ParseOff(b.LevelOffset),
+        MinLevel = b.MinLevel,
+        MaxLevel = b.MaxLevel,
+        GoldOffset = ParseOff(b.GoldOffset),
+        MaxGold = b.MaxGold,
+        AnchorIds = b.AnchorIds ?? new List<int>(),
+        EntryIdOffset = ParseOff(b.EntryIdOffset) >= 0 ? ParseOff(b.EntryIdOffset) : 0x10,
+        MinEntryId = b.MinEntryId,
+        MaxEntryId = b.MaxEntryId,
+        EntryStride = ParseOff(b.EntryStride) >= 0 ? ParseOff(b.EntryStride) : 0x18,
+        EntryValueOffset = ParseOff(b.EntryValueOffset) >= 0 ? ParseOff(b.EntryValueOffset) : 0x10,
+        DictCountOffset = ParseOff(b.DictCountOffset) >= 0 ? ParseOff(b.DictCountOffset) : 0x20,
+        DictEntriesOffset = ParseOff(b.DictEntriesOffset) >= 0 ? ParseOff(b.DictEntriesOffset) : 0x18,
+        Static = BuildStaticLookup(b),
+        Names = BuildNameTable(b)
+    };
+
+    /// <summary>
+    /// 二级查找参数（可选）。配了就把字段读写转到按 ID 关联的静态表上。
+    /// 典型场景：医术在 Dictemployee+0x30，不在员工实例对象上。
+    /// </summary>
+    private static CollectionBackend.StaticLookup BuildStaticLookup(ValueBinding b)
+    {
+        long field = ParseOff(b.StaticFieldOffset);
+
+        // 即使没有 staticFieldOffset（字段就在条目对象上，如好感度），
+        // 只要配了 staticNameIndexOffset 就仍需一个 StaticLookup——
+        // 名字是通过「条目ID -> 静态表 ename -> 名字表」查出来的。
+        // 之前这里直接 return null，导致好感度/猥琐值只显示 #ID。
+        long nameIdx = ParseOff(b.StaticNameIndexOffset);
+        if (field < 0 && (nameIdx <= 0 || ParseOff(b.NameTableEntries) <= 0))
+            return null;
+
+        return new CollectionBackend.StaticLookup
+        {
+            IdOffset = ParseOff(b.StaticIdOffset) >= 0 ? ParseOff(b.StaticIdOffset) : 0x10,
+            FieldOffset = field > 0 ? field : -1,
+            MinValue = b.StaticMinValue,
+            MaxValue = b.StaticMaxValue > 0 ? b.StaticMaxValue : 9999,
+            NameIndexOffset = nameIdx,
+            AgeOffset = ParseOff(b.StaticAgeOffset),
+            TypeOffset = ParseOff(b.StaticTypeOffset)
+        };
+    }
+
+    /// <summary>名字表参数（可选）。没配就显示 #ID。</summary>
+    private static CollectionBackend.NameTable BuildNameTable(ValueBinding b)
+    {
+        long entries = ParseOff(b.NameTableEntries);
+        if (entries <= 0) return null;
+
+        return new CollectionBackend.NameTable
+        {
+            EntriesAddress = entries,
+            EntryStride = ParseOff(b.NameEntryStride) >= 0 ? ParseOff(b.NameEntryStride) : 0x18,
+            KeyOffset = ParseOff(b.NameKeyOffset) >= 0 ? ParseOff(b.NameKeyOffset) : 0x08,
+            ValueOffset = ParseOff(b.NameValueOffset) >= 0 ? ParseOff(b.NameValueOffset) : 0x10,
+            ScanCount = b.NameScanCount > 0 ? b.NameScanCount : 500
+        };
+    }
+
+    private static ReadResult CollectionRead(GameAdapter adapter, ValueBinding b)
+    {
+        string where = b.Describe();
+        long fieldOff = ParseOff(b.FieldOffset);
+        if (fieldOff < 0)
+            return new ReadResult(b.Semantic, false, null, where, "集合绑定缺少 fieldOffset");
+
+        var proc = FindTargetProcess(adapter);
+        if (proc == null)
+            return new ReadResult(b.Semantic, false, null, where, $"找不到进程 {adapter.Exe}（游戏是否在运行？）");
+
+        using var session = CollectionBackend.Attach(proc.Id, needWrite: false);
+        if (!session.Ok)
+            return new ReadResult(b.Semantic, false, null, where, session.Error);
+
+        // 句柄打开成功不代表能读：权限不足时 OpenProcess 也返回有效句柄，
+        // 后续扫描会静默扫不到任何东西，表现为"未找到存档"这种误导性报错。
+        if (!CollectionBackend.CanRead(session.Handle))
+        {
+            long reg = CollectionBackend.FirstReadableRegion(session.Handle);
+            return new ReadResult(b.Semantic, false, null, where,
+                $"进程 {proc.ProcessName}({proc.Id}) 句柄打开成功但读不到内存。" +
+                $"首个可读区=0x{reg:X}" + (reg == 0 ? "（VirtualQueryEx 扫描未启动）" : ""));
+        }
+
+        // 走定位缓存：首次或读档后才全量扫描，其余操作直接用缓存地址。
+        // GUI 逐张卡片刷新时，若不缓存会每张卡都扫 2 秒，界面直接卡死。
+        var snap = SaveLocator.Resolve(session.Handle, BuildLocator(b), out string err);
+        if (snap == null)
+            return new ReadResult(b.Semantic, false, null, where, err);
+
+        var located = CollectionBackend.Reentries(session.Handle, snap.OwnerAddress,
+                                                  BuildLocator(b), out string rerr);
+        if (located == null)
+            return new ReadResult(b.Semantic, false, null, where, rerr);
+
+        // 单值模式：fieldOffset 相对主体对象（如总资产 Userdata+0x40）。
+        // 集合模式：fieldOffset 相对每个条目对象。
+        if (b.OwnerField)
+        {
+            if (!CollectionBackend.TryReadEntry(session.Handle, located.OwnerAddress, fieldOff, out int ov))
+                return new ReadResult(b.Semantic, false, null, where, "读取主体字段失败");
+            return new ReadResult(b.Semantic, true, ov.ToString(), where + " · 主体字段", null);
+        }
+
+        var entries = located.Entries;
+
+        var items = new List<CollectionItem>();
+        var locator = BuildLocator(b);
+        var stat = locator.Static;
+
+        foreach (var e in entries)
+        {
+            // 数值来源：
+            //   FieldOffset > 0 → 借静态表按 ID 反查（如医术在 Dictemployee+0x30）
+            //   FieldOffset < 0 → 数值就在条目对象上（好感度/猥琐值），
+            //                     静态表只用来查名字
+            long sourceAddr = e.Address;
+            if (stat != null && stat.FieldOffset > 0)
+            {
+                sourceAddr = CollectionBackend.FindStaticEntry(session.Handle, e.Id, stat);
+                if (sourceAddr == 0) continue;
+            }
+
+            if (!CollectionBackend.TryReadEntry(session.Handle, sourceAddr, fieldOff, out int val)) continue;
+
+            // 名字：从静态表的 ename 查名字表；查不到就回退 #ID。
+            string name = $"#{e.Id}";
+            if (stat != null && stat.NameIndexOffset > 0 && locator.Names != null)
+            {
+                // 名字索引也可能在静态表上（与数值同源或不同源都支持）
+                long nameSrc = stat.FieldOffset > 0
+                    ? sourceAddr
+                    : CollectionBackend.FindStaticEntry(session.Handle, e.Id, stat);
+
+                if (nameSrc != 0 && CollectionBackend.TryReadEntry(session.Handle, nameSrc,
+                        stat.NameIndexOffset, out int ename))
+                {
+                    string resolved = CollectionBackend.ResolveName(session.Handle, ename, locator.Names);
+                    if (!string.IsNullOrWhiteSpace(resolved)) name = resolved;
+                }
+            }
+
+            items.Add(new CollectionItem(e.Id, name, val.ToString()));
+        }
+
+        items.Sort((x, y) => x.Id.CompareTo(y.Id));
+        return new ReadResult(b.Semantic, true, $"{items.Count} 个条目", where, null) { Items = items };
+    }
+
+    private static WriteResult CollectionWrite(GameAdapter adapter, ValueBinding b, string rawValue, bool dryRun)
+    {
+        string where = b.Describe();
+        long fieldOff = ParseOff(b.FieldOffset);
+        if (fieldOff < 0)
+            return new WriteResult(b.Semantic, false, null, null, true, "集合绑定缺少 fieldOffset");
+
+        // 目标格式：`1001=99`（指定条目）或 `99`（全部条目）
+        int? targetId = null;
+        string valuePart = rawValue?.Trim() ?? "";
+        int eq = valuePart.IndexOf('=');
+        if (eq > 0)
+        {
+            if (!int.TryParse(valuePart[..eq].Trim(), out int tid))
+                return new WriteResult(b.Semantic, false, null, null, true, $"条目ID 不是数字：{valuePart[..eq]}");
+            targetId = tid;
+            valuePart = valuePart[(eq + 1)..].Trim();
+        }
+        if (!int.TryParse(valuePart, out int value))
+            return new WriteResult(b.Semantic, false, null, null, true, $"值不是整数：{valuePart}");
+
+        if (b.Range is { Length: 2 } && (value < b.Range[0] || value > b.Range[1]))
+            return new WriteResult(b.Semantic, false, null, null, true,
+                $"值 {value} 超出允许区间 {b.Range[0]}–{b.Range[1]}");
+
+        var proc = FindTargetProcess(adapter);
+        if (proc == null)
+            return new WriteResult(b.Semantic, false, null, null, true, $"找不到进程 {adapter.Exe}");
+
+        using var session = CollectionBackend.Attach(proc.Id, needWrite: !dryRun);
+        if (!session.Ok)
+            return new WriteResult(b.Semantic, false, null, null, true, session.Error);
+
+        var snap = SaveLocator.Resolve(session.Handle, BuildLocator(b), out string lerr);
+        if (snap == null)
+            return new WriteResult(b.Semantic, false, null, null, true, lerr);
+
+        var located = CollectionBackend.Reentries(session.Handle, snap.OwnerAddress,
+                                                  BuildLocator(b), out string wlerr);
+        if (located == null)
+            return new WriteResult(b.Semantic, false, null, null, true, wlerr);
+
+        // 单值模式（如总资产）：直接写主体对象上的字段
+        if (b.OwnerField)
+        {
+            if (!CollectionBackend.TryReadEntry(session.Handle, located.OwnerAddress, fieldOff, out int ob))
+                return new WriteResult(b.Semantic, false, null, null, true, "读取主体字段失败");
+
+            if (dryRun)
+                return new WriteResult(b.Semantic, true, ob.ToString(), value.ToString(), true, "dry-run：未实际写入");
+
+            if (!CollectionBackend.TryWriteEntry(session.Handle, located.OwnerAddress, fieldOff, ob, value, out string owerr))
+                return new WriteResult(b.Semantic, false, ob.ToString(), null, true, owerr);
+            return new WriteResult(b.Semantic, true, ob.ToString(), value.ToString(), true, null);
+        }
+
+        var entries = located.Entries;
+
+        var targets = targetId.HasValue ? entries.FindAll(e => e.Id == targetId.Value) : entries;
+        if (targets.Count == 0)
+            return new WriteResult(b.Semantic, false, null, null, true,
+                $"集合里没有条目 {targetId}（现有：{string.Join(", ", entries.ConvertAll(e => e.Id))}）");
+
+        var befores = new List<string>();
+        var afters = new List<string>();
+
+        var stat = BuildStaticLookup(b);
+
+        foreach (var e in targets)
+        {
+            long sourceAddr = e.Address;
+
+            // 二级查找：写入目标同样可能在静态表上（如医术 Dictemployee+0x30）
+            // 只有 FieldOffset > 0 才说明「数值本身」在静态表上（如医术）。
+            // FieldOffset = -1 表示静态表只用来查名字，数值仍在条目对象上。
+            // 之前这里只判 stat != null，会把 ename(+0x18) 当成好感度读出来（实测读成 1001）。
+            if (stat != null && stat.FieldOffset > 0)
+            {
+                sourceAddr = CollectionBackend.FindStaticEntry(session.Handle, e.Id, stat);
+                if (sourceAddr == 0) { befores.Add($"{e.Id}:静态表未找到"); continue; }
+            }
+
+            if (!CollectionBackend.TryReadEntry(session.Handle, sourceAddr, fieldOff, out int before)) continue;
+            befores.Add($"{e.Id}:{before}");
+
+            if (dryRun) { afters.Add($"{e.Id}:{value}"); continue; }
+
+            if (!CollectionBackend.TryWriteEntry(session.Handle, sourceAddr, fieldOff, before, value, out string werr))
+                return new WriteResult(b.Semantic, false, string.Join(" ", befores), null, true,
+                    $"条目 {e.Id} 写入失败：{werr}");
+            afters.Add($"{e.Id}:{value}");
+        }
+
+        return new WriteResult(b.Semantic, true, string.Join(" ", befores), string.Join(" ", afters),
+            true, dryRun ? "dry-run：未实际写入" : null);
+    }
+
+    private static System.Diagnostics.Process FindTargetProcess(GameAdapter adapter)
+    {
+        string want = (adapter.Exe ?? "").Trim();
+        if (want.Length == 0) return null;
+        string name = want.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? want[..^4] : want;
+
+        foreach (var p in System.Diagnostics.Process.GetProcessesByName(name))
+        {
+            try { if (!p.HasExited) return p; } catch { }
+        }
+        return null;
+    }
+public static WriteResult Write(GameAdapter adapter, string semantic, string rawValue, bool dryRun)
     {
         // 预检只为决定要不要建 CDP 连接（游戏没开端口时保持"绑定缺失/超区间"等准确错误），
         // 权限与合法性判定以 WriteOn 内部为准
@@ -354,6 +655,10 @@ internal static class AdapterRunner
         // memory_aob 走内存后端，不依赖 CDP
         if (b.Kind == "memory_aob")
             return MemoryBackend.Write(adapter, b, rawValue, dryRun);
+
+        // memory_collection：集合语义，同样不依赖 CDP
+        if (b.Kind == "memory_collection")
+            return CollectionWrite(adapter, b, rawValue, dryRun);
 
         if (adapter.Engine != "construct3")
             return new WriteResult(semantic, false, null, null, b.Realtime, $"引擎 {adapter.Engine} 的写入尚未实现");

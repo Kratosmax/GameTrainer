@@ -27,6 +27,7 @@ internal sealed class GuiForm : Form
     private readonly string _skillRoot;
     private GameAdapter _adapter;
     private readonly Dictionary<string, ValueCard> _cards = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, CollectionCard> _collectionCards = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PersistentWatcher> _watchers = new(StringComparer.OrdinalIgnoreCase);
     private GameProfile _profile;
     /// <summary>
@@ -906,6 +907,18 @@ internal sealed class GuiForm : Form
 
         foreach (var b in _adapter.Bindings)
         {
+            // 集合语义用专门的卡片：一张卡里按条目分行，而不是只显示汇总。
+            if (string.Equals(b.Kind, "memory_collection", StringComparison.OrdinalIgnoreCase)
+                && !b.OwnerField)
+            {
+                // 不要在这里设 Dock=Fill：集合卡片高度随条目数变化，
+                // Fill 会让它被 TableLayoutPanel 压成 0 高度而看不见。
+                var cc = new CollectionCard(b.Semantic, CollectionDisplayName(b.Semantic));
+                cc.ApplyRequested += (sem, id, v) => _ = ApplyCollectionValueAsync(sem, id, v);
+                _collectionCards[b.Semantic] = cc;
+                continue;
+            }
+
             var style = b.Style switch
             {
                 "fill" => ValueCard.Style.Fill,
@@ -941,18 +954,54 @@ internal sealed class GuiForm : Form
         RelayoutGrid(grid);
     }
 
-    /// <summary>按容器宽度决定列数并重新铺卡片。</summary>
+    /// <summary>集合语义的显示名。适配包没配中文名时用语义名兜底。</summary>
+    private static string CollectionDisplayName(string semantic) => semantic switch
+    {
+        "employee_good" => "员工好感度",
+        "employee_bad" => "员工猥琐值",
+        "employee_medical" => "员工医术",
+        _ => Semantics.Display(semantic)
+    };
+
+    /// <summary>写集合里某个条目的值，成功后刷新整张卡片。</summary>
+    private async Task ApplyCollectionValueAsync(string semantic, int entryId, int value)
+    {
+        if (_adapter == null) return;
+        try
+        {
+            string raw = $"{entryId}={value}";
+            var r = await Task.Run(() => AdapterRunner.Write(_adapter, semantic, raw, dryRun: false));
+            if (!r.Ok) { Log($"[错误] {r.Error}"); return; }
+
+            Log($"{Semantics.Display(semantic)}：{r.Before} → {r.After}");
+
+            // 写成功后重读整张卡片，保证显示的数值与实际一致。
+            var results = await Task.Run(() => AdapterRunner.Read(_adapter, new[] { semantic }));
+            foreach (var rr in results)
+            {
+                if (_collectionCards.TryGetValue(rr.Semantic, out var card))
+                    card.SetItems(rr.Items ?? new List<AdapterRunner.CollectionItem>(), rr.Ok, rr.Error);
+            }
+        }
+        catch (Exception ex) { Log("[异常] " + ex.Message); }
+    }
+
     private void RelayoutGrid(TableLayoutPanel grid)
     {
         if (grid == null || grid.IsDisposed) return;
         int w = _patchHost.ClientSize.Width - _patchHost.Padding.Horizontal;
         if (w < 200) return;
 
-        const int minCol = 260;
+        // 集合卡片一行要放「名字+数值+输入框+应用」，实测 340px 才不裁名字。
+        const int minCol = 380;
         int cols = Math.Max(1, w / minCol);
-        if (cols > 4) cols = 4;
+        if (cols > 2) cols = 2;
 
-        var cards = _cards.Values.ToList();
+        // 单值卡片与集合卡片都要铺进网格。只取 _cards 会导致集合卡片
+        // 完全不显示（它不在 _cards 里），表现为界面上只剩一张金币卡。
+        var cards = new List<Control>();
+        cards.AddRange(_cards.Values);
+        cards.AddRange(_collectionCards.Values);
         if (cards.Count == 0) return;
 
         grid.SuspendLayout();
@@ -966,7 +1015,24 @@ internal sealed class GuiForm : Form
         int rows = (cards.Count + cols - 1) / cols;
         grid.RowCount = rows;
         for (int i = 0; i < rows; i++)
-            grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        {
+            // 行高按「本行最高卡片的真实内容高度」算。
+            // 不能读 Control.Height：表格行高会反过来钳制卡片，
+            // 读到的永远是上一次布局的值，导致永远差一截（10 行只显示 3 行）。
+            int maxH = 0;
+            for (int k = i * cols; k < Math.Min((i + 1) * cols, cards.Count); k++)
+            {
+                int h = cards[k] is CollectionCard cc ? cc.RequiredHeight : cards[k].Height;
+                maxH = Math.Max(maxH, h);
+            }
+            grid.RowStyles.Add(new RowStyle(SizeType.Absolute, Math.Max(maxH + 8, 190)));
+        }
+
+        // Dock=None 的卡片要显式给定宽度：按列宽均分。
+        // 高度用卡片自算值（SetItems 里按条目数得出），行高再按它设。
+        int cellW = Math.Max(280, w / cols);
+        foreach (Control card in cards)
+            card.Width = cellW - 12;
 
         for (int i = 0; i < cards.Count; i++)
             grid.Controls.Add(cards[i], i % cols, i / cols);
@@ -988,6 +1054,10 @@ internal sealed class GuiForm : Form
         // 标志会永久为 true，之后再也刷新不了。
         try
         {
+            // 「刷新数值」= 用户主动要求重新定位存档。
+            // 清掉定位缓存，让下一次读取重新扫描（读档、换档后走这条）。
+            SaveLocator.Invalidate();
+
             var adapter = _adapter;
 
             Dictionary<string, AdapterRunner.ReadResult> results;
@@ -1012,6 +1082,17 @@ internal sealed class GuiForm : Form
 
             foreach (var kv in results)
             {
+                // 集合语义走另一个字典：员工列表这类数据一张卡片里有 N 行，
+                // 不能按单值卡片的 SetValue 处理，必须走 SetItems 重建行。
+                if (_collectionCards.TryGetValue(kv.Key, out var ccard))
+                {
+                    ccard.SetItems(kv.Value.Items ?? new List<AdapterRunner.CollectionItem>(),
+                                   kv.Value.Ok, ShortenError(kv.Value.Error));
+                    if (kv.Value.Ok) ok++;
+                    else { firstError ??= kv.Value.Error; fail++; }
+                    continue;
+                }
+
                 if (!_cards.TryGetValue(kv.Key, out var card)) continue;
 
                 if (kv.Value.Ok)
@@ -1063,6 +1144,20 @@ internal sealed class GuiForm : Form
         finally
         {
             _refreshing = false;
+
+            // 集合卡片填充后高度会变化，必须重排一次网格，
+            // 否则行高停留在初始值，卡片被裁掉看不见。
+            foreach (Control c in _patchHost.Controls)
+            {
+                if (c is not TableLayoutPanel tlp) continue;
+                tlp.SuspendLayout();
+                // 先让每张卡按内容确认自己的高度，再按最大值设行高。
+                // 少了这一步，行高会是填充数据之前的旧值，
+                // 表现为 10 个员工只显示 3 行、其余被裁掉。
+                foreach (Control card in tlp.Controls) card.PerformLayout();
+                RelayoutGrid(tlp);
+                tlp.ResumeLayout(true);
+            }
         }
     }
 
