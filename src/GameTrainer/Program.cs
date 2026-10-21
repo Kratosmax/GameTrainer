@@ -996,7 +996,26 @@ internal static class Program
         if (!int.TryParse(a[1], out int port)) { Console.Error.WriteLine("端口无效"); return 2; }
         string objName = a[2], varName = a[3], rawValue = a[4];
         bool dryRun = a.Skip(5).Any(x => x == "--dry-run" || x == "-n");
-        string jsVal = double.TryParse(rawValue, out _) ? rawValue : JsonSerializer.Serialize(rawValue);
+        // 原先用 double.TryParse(rawValue, out _) 判断"是否数字"，两个问题：
+        //   1. 不带 InvariantCulture，受系统区域影响
+        //   2. 接受 NaN —— "NaN" 被当数字裸插，直接写坏游戏变量
+        //      （本会话早期实测过 orEver 变 NaN，界面显示异常且难恢复）
+        // 现在与 sem/jsapply/jsset 同规则：数字必须是有限值，其余按字符串 JSON 序列化。
+        string jsVal;
+        if (double.TryParse(rawValue, System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out double num))
+        {
+            if (double.IsNaN(num) || double.IsInfinity(num))
+            {
+                Console.Error.WriteLine($"[拒绝] 值 \"{rawValue}\" 是 NaN/Infinity，不是有效的游戏数值。");
+                return 3;
+            }
+            jsVal = num.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+        }
+        else
+        {
+            jsVal = JsonSerializer.Serialize(rawValue);
+        }
 
         string script = $$"""
 (() => {

@@ -86,4 +86,28 @@ public class JsLiteralTests
         Assert.True(JsLiteral.TryPrepare(null, "string", out string jsVal));
         Assert.Equal("\"\"", jsVal);
     }
+
+    [Theory]
+    [InlineData("NaN")]
+    [InlineData("Infinity")]
+    [InlineData("-Infinity")]
+    [InlineData("1e400")]   // 溢出成正无穷
+    public void 非有限浮点_拒绝(string raw)
+    {
+        // 这类值插进脚本不构成注入（是合法 JS 字面量），
+        // 但会写坏游戏变量——本会话早期实测过 orEver 变成 NaN，
+        // 界面显示异常且难以恢复。
+        Assert.False(JsLiteral.TryPrepare(raw, "number", out _),
+            $"「{raw}」被当成合法数值放行，会污染游戏变量");
+    }
+
+    [Theory]
+    [InlineData("1,5")]
+    [InlineData("1.5.5")]
+    [InlineData("")]
+    public void 区域相关的畸形数字_拒绝(string raw)
+    {
+        // 必须用 InvariantCulture 判定：某些区域把逗号当小数点
+        Assert.False(JsLiteral.TryPrepare(raw, "number", out _));
+    }
 }
