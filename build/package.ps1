@@ -98,6 +98,23 @@ foreach ($ch in $channels) {
     # 首次启动需要激活记录目录存在
     New-Item -ItemType Directory -Force -Path (Join-Path $stage 'snapshots') | Out-Null
 
+    # 适配包：一个游戏一份 adapter.json。sem / launch / probe 全靠它，
+    # 不打包进去的话，包里的新功能就是空壳。
+    $adaptersSrc = Join-Path $repoRoot 'adapters'
+    $adaptersDst = Join-Path $stage 'adapters'
+    if (Test-Path $adaptersDst) { Remove-Item $adaptersDst -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $adaptersDst | Out-Null
+    if (Test-Path $adaptersSrc) {
+        Copy-Item (Join-Path $adaptersSrc '*') -Destination $adaptersDst -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # 方法论文档随包分发：使用者要照着它摸新游戏
+    $guideSrc = Join-Path $repoRoot 'docs\GAME-ADAPTER-GUIDE.md'
+    if (Test-Path $guideSrc) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $stage 'docs') | Out-Null
+        Copy-Item $guideSrc -Destination (Join-Path $stage 'docs') -Force
+    }
+
     # 通道标记：更新器只接受同通道包
     Write-Utf8NoBom (Join-Path $stage 'channel.txt') $ch
     Write-Utf8NoBom (Join-Path $stage 'version.txt') $version
