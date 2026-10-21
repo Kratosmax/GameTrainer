@@ -121,12 +121,17 @@ internal sealed class PersistentWatcher : IDisposable
         var layouts = _adapter.EngineOptions.InGameLayouts;
         if (layouts is { Count: > 0 })
         {
+            // RuntimePath 是表达式不是数据：白名单校验后才允许插值（防注入），
+            // 但不能 JSON 序列化（会变成字符串常量导致运行时调用失败）。
+            if (!AdapterRunner.IsValidPropertyChain(_adapter.EngineOptions.RuntimePath))
+                return false;
+
             try
             {
                 string script = $$"""
 (() => {
   try {
-    const rt = {{System.Text.Json.JsonSerializer.Serialize(_adapter.EngineOptions.RuntimePath)}};
+    const rt = {{_adapter.EngineOptions.RuntimePath}};
     if (!rt) return JSON.stringify({ layout: null });
     const lm = rt.GetLayoutManager();
     const cur = lm && lm.GetMainRunningLayout ? lm.GetMainRunningLayout() : null;

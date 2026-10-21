@@ -60,7 +60,7 @@ internal static class AdapterRunner
 
             string script = $$"""
 (() => {
-  const RT = {{JsonSerializer.Serialize(rt)}};
+  const RT = {{rt}};
   const REQS = {{JsonSerializer.Serialize(reqs)}};
   try {
     if (!RT) return JSON.stringify({ error: '未找到运行时' });
@@ -306,6 +306,14 @@ internal static class AdapterRunner
             using var cdp = CdpClient.Connect(adapter.Connection.DebugPort, adapter.Connection.TitleFilter);
             var rt = adapter.EngineOptions.RuntimePath;
 
+            // RuntimePath 是**可执行的属性链表达式**（如 self.c3_runtimeInterface._localRuntime），
+            // 不能 JSON 序列化——包上引号就变成字符串常量，运行时调用全部失败（实测踩过）。
+            // 也不能裸插值——适配包是外部文件，可能携带任意 JS。
+            // 解法：白名单校验「标识符.标识符…」形态，通过才允许以表达式形式插入。
+            if (!IsValidPropertyChain(rt))
+                return new WriteResult(semantic, false, null, null, b.Realtime,
+                    $"RuntimePath \"{rt}\" 不是合法的属性链表达式（只允许 标识符.标识符.… 形式）。");
+
             // 拼进 JS 的值必须是**可控形态**，否则命令行参数可直接注入页面脚本：
             //   sem <游戏> write health "1); evil(("
             // 规则：string 类型走 JSON 序列化（自带引号与转义）；
@@ -354,12 +362,37 @@ internal static class AdapterRunner
         }
     }
 
+    /// <summary>
+    /// RuntimePath 白名单校验：只允许「标识符.标识符.…」形式的属性链。
+    ///
+    /// 为什么不能 JSON 序列化：它是可执行表达式，包引号就变成字符串常量，
+    /// rt.GetAllObjectClasses() 之类全部静默失败（实测踩过，导致 probe/sem 集体失灵）。
+    /// 为什么不能裸插值：适配包是外部文件，可能携带任意 JS。
+    /// 属性链是两者的交集：足够表达 self.a.b._c 这类运行时入口，
+    /// 又不可能包含括号/分号/赋值等任何可执行结构。
+    /// </summary>
+    internal static bool IsValidPropertyChain(string expr)
+    {
+        if (string.IsNullOrWhiteSpace(expr)) return false;
+        if (expr.Length > 256) return false;
+
+        foreach (string seg in expr.Split('.'))
+        {
+            if (seg.Length == 0) return false;
+            // 允许 $ 和 _ 开头（JS 合法标识符），其余必须是字母数字/$_
+            if (seg[0] != '_' && seg[0] != '$' && !char.IsLetter(seg[0])) return false;
+            foreach (char ch in seg)
+                if (ch != '_' && ch != '$' && !char.IsLetterOrDigit(ch)) return false;
+        }
+        return true;
+    }
+
     // ---------------- JS 构造 ----------------
 
     private static string BuildReadInstanceVar(string rtPath, string obj, string var) => $$"""
 (() => {
   try {
-    const rt = {{JsonSerializer.Serialize(rtPath)}};
+    const rt = {{rtPath}};
     if (!rt) return JSON.stringify({ error: '未找到运行时' });
     const cls = [...rt.GetAllObjectClasses()].find(c => c.GetName() === {{JsonSerializer.Serialize(obj)}});
     if (!cls) return JSON.stringify({ error: '找不到对象类 ' + {{JsonSerializer.Serialize(obj)}} });
@@ -379,7 +412,7 @@ internal static class AdapterRunner
     private static string BuildWriteInstanceVar(string rtPath, string obj, string var, string jsVal, bool dryRun) => $$"""
 (() => {
   try {
-    const rt = {{JsonSerializer.Serialize(rtPath)}};
+    const rt = {{rtPath}};
     if (!rt) return JSON.stringify({ error: '未找到运行时' });
     const cls = [...rt.GetAllObjectClasses()].find(c => c.GetName() === {{JsonSerializer.Serialize(obj)}});
     if (!cls) return JSON.stringify({ error: '找不到对象类 ' + {{JsonSerializer.Serialize(obj)}} });
