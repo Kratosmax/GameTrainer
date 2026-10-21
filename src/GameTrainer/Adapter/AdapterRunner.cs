@@ -50,6 +50,22 @@ internal static class AdapterRunner
         if (instBindings.Count > 0)
         {
             string rt = adapter.EngineOptions.RuntimePath;
+
+            // RuntimePath 是表达式不是数据，必须白名单校验后才允许插值。
+            // 读路径同样要拦：投毒的适配包只要被 read 一次就能执行任意 JS
+            // （实测：sem <游戏> read 即触发，不需要写入）。
+            if (!IsValidPropertyChain(rt))
+            {
+                foreach (var b in instBindings)
+                    map[b.Semantic] = new ReadResult(b.Semantic, false, null, b.Describe(),
+                        $"RuntimePath \"{rt}\" 不是合法的属性链表达式，已拒绝执行。");
+                instBindings.Clear();
+            }
+        }
+
+        if (instBindings.Count > 0)
+        {
+            string rt = adapter.EngineOptions.RuntimePath;
             // 按对象名分组，减少查找次数
             var groups = instBindings.GroupBy(b => b.ObjectName);
             var reqs = groups.Select(g => new
@@ -60,7 +76,7 @@ internal static class AdapterRunner
 
             string script = $$"""
 (() => {
-  const RT = {{rt}};
+  const RT = {{SafeRuntimeExpr(rt)}};
   const REQS = {{JsonSerializer.Serialize(reqs)}};
   try {
     if (!RT) return JSON.stringify({ error: '未找到运行时' });
@@ -229,6 +245,15 @@ internal static class AdapterRunner
 
             if (b.Kind == "instance_var")
             {
+                // 与 Write 路径同等的白名单校验：读也要拦，否则投毒适配包
+                // 只需被 read 一次即可在游戏进程执行任意 JS。
+                if (!IsValidPropertyChain(rt))
+                {
+                    results.Add(new ReadResult(sem, false, null, b.Describe(),
+                        $"RuntimePath \"{rt}\" 不是合法的属性链表达式，已拒绝执行。"));
+                    continue;
+                }
+
                 string script = BuildReadInstanceVar(rt, b.ObjectName, b.VarName);
                 try
                 {
@@ -389,10 +414,21 @@ internal static class AdapterRunner
 
     // ---------------- JS 构造 ----------------
 
+    /// <summary>
+    /// 校验 RuntimePath 并把非法值转成无害的 null 表达式。
+    ///
+    /// 为什么放在构造器里而不是调用方：
+    /// 上一轮白名单只加在 Write 路径，ReadAll 和 BuildReadInstanceVar 漏了，
+    /// 导致投毒适配包只要被 read 一次就能执行任意 JS（实测打上了标记）。
+    /// 把校验下沉到插值点，新增调用点就自动受保护，不依赖调用方记得校验。
+    /// </summary>
+    private static string SafeRuntimeExpr(string rtPath)
+        => IsValidPropertyChain(rtPath) ? rtPath : "null";
+
     private static string BuildReadInstanceVar(string rtPath, string obj, string var) => $$"""
 (() => {
   try {
-    const rt = {{rtPath}};
+    const rt = {{SafeRuntimeExpr(rtPath)}};
     if (!rt) return JSON.stringify({ error: '未找到运行时' });
     const cls = [...rt.GetAllObjectClasses()].find(c => c.GetName() === {{JsonSerializer.Serialize(obj)}});
     if (!cls) return JSON.stringify({ error: '找不到对象类 ' + {{JsonSerializer.Serialize(obj)}} });
@@ -412,7 +448,7 @@ internal static class AdapterRunner
     private static string BuildWriteInstanceVar(string rtPath, string obj, string var, string jsVal, bool dryRun) => $$"""
 (() => {
   try {
-    const rt = {{rtPath}};
+    const rt = {{SafeRuntimeExpr(rtPath)}};
     if (!rt) return JSON.stringify({ error: '未找到运行时' });
     const cls = [...rt.GetAllObjectClasses()].find(c => c.GetName() === {{JsonSerializer.Serialize(obj)}});
     if (!cls) return JSON.stringify({ error: '找不到对象类 ' + {{JsonSerializer.Serialize(obj)}} });
