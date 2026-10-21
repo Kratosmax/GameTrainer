@@ -34,6 +34,19 @@ internal sealed class ValueCard : Panel
     private readonly Panel _body = new();
     private readonly Panel _fold = new();
     private readonly TextBox _input = new();
+
+    /// <summary>
+    /// 主输入框的当前内容，供热键触发时读取目标值。
+    /// 优先取 _numInput（number 样式的输入框），回退到 _input（其它样式）。
+    /// </summary>
+    public string CurrentInputText
+    {
+        get
+        {
+            string v = _numInput.Text.Trim();
+            return v.Length > 0 ? v : _input.Text.Trim();
+        }
+    }
     private readonly FlatButton _applyBtn = new();
     private readonly FlatButton _foldBtn = new();
     private readonly FlatButton _fillBtn = new();

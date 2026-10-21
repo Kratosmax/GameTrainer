@@ -4,7 +4,7 @@
     "engine":  "native_memory",
     "exe":  "Hospital Rhapsody.exe",
     "mode":  "allow",
-    "installDir":  "F:\\Game\\Hospital Rhapsody",
+    "installDir":  "",
     "connection":  {
                        "debugPort":  0,
                        "titleFilter":  ""

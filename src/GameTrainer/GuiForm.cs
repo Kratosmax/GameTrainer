@@ -28,6 +28,8 @@ internal sealed class GuiForm : Form
     private GameAdapter _adapter;
     private readonly Dictionary<string, ValueCard> _cards = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, CollectionCard> _collectionCards = new(StringComparer.OrdinalIgnoreCase);
+    private System.Windows.Forms.Timer _relayoutDebounce;
+    private readonly Prefs _prefs = Prefs.Load();
     private readonly Dictionary<string, PersistentWatcher> _watchers = new(StringComparer.OrdinalIgnoreCase);
     private GameProfile _profile;
     /// <summary>
@@ -49,6 +51,7 @@ internal sealed class GuiForm : Form
     private readonly FlatButton _attachBtn = new();
     private readonly FlatButton _refreshBtn = new();
     private readonly FlatButton _settingsBtn = new();
+    private readonly FlatButton _backBtn = new();
 
     // 侧栏
     private readonly ProfileListBox _profileList = new();
@@ -123,6 +126,11 @@ internal sealed class GuiForm : Form
             RefreshStartupStatus();
             CheckResidueOnStartup();
             ScheduleAutoUpdateCheck();
+
+            // 启动落在首页：先让用户选游戏，而不是默认打开第一个适配包。
+            // 旧版一进来就加载全部适配包，没装游戏的那几个全是读取失败，
+            // 看起来像程序坏了。
+            ShowHomePage();
         };
 
         FormClosing += OnFormClosing;
@@ -309,6 +317,16 @@ internal sealed class GuiForm : Form
         _settingsBtn.Margin = new Padding(0);
         _settingsBtn.Click += (_, _) => OpenSettings();
 
+        // 返回游戏库：游戏页是首页的下一级，必须有一眼可见的返回入口
+        // （ui-design.md：层级浏览要能回到上一级，不能只能靠重启程序）。
+        _backBtn.Text = "← 游戏库";
+        _backBtn.AccessibleName = "返回游戏库";
+        _backBtn.Kind = ButtonKind.Secondary;
+        _backBtn.Width = 96;
+        _backBtn.Margin = new Padding(0, 0, Tokens.S2, 0);
+        _backBtn.Click += (_, _) => ShowHomePage();
+
+        actions.Controls.Add(_backBtn);
         actions.Controls.Add(_attachBtn);
         actions.Controls.Add(_refreshBtn);
         actions.Controls.Add(_settingsBtn);
@@ -349,8 +367,159 @@ internal sealed class GuiForm : Form
         body.Controls.Add(BuildSidebar(), 0, 0);
         body.Controls.Add(BuildContent(), 1, 0);
 
-        host.Controls.Add(body);
+        // 两页切换：首页（游戏网格）与游戏页（原有修改界面）。
+        // 用两个 Dock=Fill 的兄弟面板切换可见性，不改动已有布局逻辑，
+        // 这样游戏页的行为完全不受影响，首页也可以独立演进。
+        _homePage = new HomePage { Dock = DockStyle.Fill, Visible = false };
+        _homePage.GameSelected += adapter => EnterGamePage(adapter);
+        _homePage.DownloadRequested += remote => _ = DownloadAdapterAsync(remote);
+        _homePage.UninstallRequested += id => UninstallAdapter(id);
+
+        var pages = new Panel { Dock = DockStyle.Fill, BackColor = Tokens.PageBack };
+        pages.Controls.Add(_homePage);
+        pages.Controls.Add(body);
+
+        _gameBody = body;
+
+        host.Controls.Add(pages);
         return host;
+    }
+
+    private HomePage _homePage;
+    private Control _gameBody;
+
+    /// <summary>
+    /// 显示首页：刷新已安装/可下载列表。
+    /// 首页是"选游戏"的地方，不该因为某个游戏读不到值而阻塞。
+    /// </summary>
+    private async void ShowHomePage()
+    {
+        if (_homePage == null) return;
+
+        _homePage.Visible = true;
+        if (_gameBody != null) _gameBody.Visible = false;
+
+        // 首页不针对任何具体游戏：隐藏游戏页专属的徽章与操作按钮，
+        // 否则"读取失败"会让人以为程序坏了，实际只是还没选游戏。
+        SetGameChromeVisible(false);
+
+        // 先渲染本地已安装的，再异步补上远端清单——
+        // 网络慢时不能白屏等清单回来。
+        var installed = LoadInstalledAdapters();
+        _homePage.Populate(installed, null, null);
+
+        var (index, error) = await AdapterRepository.FetchIndexAsync();
+        if (index != null)
+            _homePage.Populate(installed, index.Adapters, null);
+        else
+            _homePage.Populate(installed, null, error);
+    }
+
+    /// <summary>
+    /// 切换「游戏页专属」控件的可见性。
+    ///
+    /// 首页与游戏页共用同一套顶栏/状态栏，但徽章与操作按钮只对具体游戏有意义。
+    /// 在首页显示"读取失败"会让用户以为程序坏了——实际上只是还没选游戏。
+    /// </summary>
+    private void SetGameChromeVisible(bool visible)
+    {
+        foreach (Control c in new Control[] { _attachBadge, _antiCheatBadge, _attachBtn, _refreshBtn })
+            if (c != null) c.Visible = visible;
+
+        foreach (Control c in new Control[] { _statusAttach, _statusAntiCheat, _statusStartup })
+            if (c != null) c.Visible = visible;
+
+        if (!visible)
+        {
+            _hotkeyHint.Text = "从下方选择一个游戏开始";
+            _hotkeyHint.ForeColor = Tokens.TextMuted;
+        }
+    }
+
+    /// <summary>进入某个游戏的修改页。</summary>
+    private void EnterGamePage(GameAdapter adapter)
+    {
+        if (_homePage != null) _homePage.Visible = false;
+        if (_gameBody != null) _gameBody.Visible = true;
+        SetGameChromeVisible(true);
+
+        // 走既有的选中路径，保证行为与侧栏点选完全一致
+        _profileList.SelectTag(adapter);
+        OnProfileSelected();
+    }
+
+    /// <summary>下载并安装一个适配包，成功后直接进入该游戏。</summary>
+    private async Task DownloadAdapterAsync(AdapterRepository.RemoteAdapter remote)
+    {
+        Log($"[适配包] 开始下载 {remote.Name}…");
+
+        var (ok, error) = await Task.Run(() => AdapterRepository.Install(_skillRoot, remote));
+        if (!ok)
+        {
+            Log($"[适配包] 下载失败：{error}");
+            MessageBox.Show(this, "下载失败：" + error, "GameTrainer",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            ShowHomePage();
+            return;
+        }
+
+        Log($"[适配包] {remote.Name} 已安装");
+
+        // 重新加载列表并进入该游戏
+        LoadProfiles();
+        var installed = LoadInstalledAdapters();
+        var target = installed.FirstOrDefault(a =>
+            string.Equals(a.Id, remote.Id, StringComparison.OrdinalIgnoreCase));
+
+        if (target != null) EnterGamePage(target);
+        else ShowHomePage();
+    }
+
+    /// <summary>卸载适配包。入口保留在首页卡片上，卸载后卡片变成"可下载"。</summary>
+    private void UninstallAdapter(string adapterId)
+    {
+        var confirm = MessageBox.Show(this,
+            $"确定卸载适配包「{adapterId}」？\n\n只删除适配包文件，不会动游戏和你的存档。",
+            "卸载适配包", MessageBoxButtons.OKCancel, MessageBoxIcon.Question);
+
+        if (confirm != DialogResult.OK) return;
+
+        var (ok, error) = AdapterRepository.Uninstall(_skillRoot, adapterId);
+        if (!ok)
+        {
+            MessageBox.Show(this, "卸载失败：" + error, "GameTrainer",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        Log($"[适配包] 已卸载 {adapterId}");
+        LoadProfiles();
+        ShowHomePage();
+    }
+
+    /// <summary>读本地 adapters/ 下的全部适配包。</summary>
+    private List<GameAdapter> LoadInstalledAdapters()
+    {
+        var list = new List<GameAdapter>();
+        try
+        {
+            string root = Path.Combine(_skillRoot, "adapters");
+            if (!Directory.Exists(root)) return list;
+
+            foreach (string dir in Directory.EnumerateDirectories(root).OrderBy(d => d))
+            {
+                string path = Path.Combine(dir, "adapter.json");
+                if (!File.Exists(path)) continue;
+                try
+                {
+                    var a = GameAdapter.Load(path);
+                    if (a.Validate().Count == 0) list.Add(a);
+                }
+                catch { }
+            }
+        }
+        catch { }
+        return list;
     }
 
     private Control BuildSidebar()
@@ -479,10 +648,24 @@ internal sealed class GuiForm : Form
     private void UpdateStatusForAdapter(GameAdapter a, bool? cdpReady = null)
     {
         _statusAttach.Text = $"{a.Name} · {a.Engine}";
+        _statusAttach.ForeColor = Tokens.TextPrimary;
 
-        bool ok = cdpReady ?? GameLauncher.IsCdpReady(a.Connection.DebugPort, out _);
-        _statusAntiCheat.Text = ok ? $"调试端口：已连接 ({a.Connection.DebugPort})" : $"调试端口：未连接 ({a.Connection.DebugPort})";
-        _statusAntiCheat.ForeColor = ok ? Tokens.Success : Tokens.Warning;
+        // 只有 construct3（走 CDP）才关心端口；native_memory 等原生引擎
+        // 直接读写进程内存，没有端口概念，显示"未连接"会误导使用者。
+        bool usesCdp = string.Equals(a.Engine, "construct3", StringComparison.OrdinalIgnoreCase);
+
+        if (usesCdp)
+        {
+            bool ok = cdpReady ?? GameLauncher.IsCdpReady(a.Connection.DebugPort, out _);
+            _statusAntiCheat.Text = ok ? $"调试端口：{a.Connection.DebugPort} 已就绪"
+                                       : $"调试端口：{a.Connection.DebugPort} 未就绪";
+            _statusAntiCheat.ForeColor = ok ? Tokens.Success : Tokens.Warning;
+        }
+        else
+        {
+            _statusAntiCheat.Text = "原生内存 · 无需调试端口";
+            _statusAntiCheat.ForeColor = Tokens.TextSecondary;
+        }
 
         _statusStartup.Text = $"{a.Bindings.Count} 个数值 · {a.Mode}";
         _statusStartup.ForeColor = Tokens.TextSecondary;
@@ -563,8 +746,13 @@ internal sealed class GuiForm : Form
 
     /// <summary>
     /// 收起 / 展开日志区。
-    /// 收起时把右列压到最小宽度，把空间让给数值卡片——日志是低频信息，
-    /// 不该长期占用 42% 宽度（ui-design.md：低频区占主要空间时应可折叠）。
+    ///
+    /// 原来是把右列压到 180px，展开收起时整块布局横向跳动，
+    /// 而且 180px 的日志区几乎读不了内容，收/放都不好用。
+    ///
+    /// 改为底部抽屉：卡片区始终占满宽度，日志在下方按固定行高展开/收起。
+    /// 收起时只留标题栏，展开时占 38% 高度。日志是低频信息，
+    /// 抽屉比侧栏更符合"偶尔看一眼"的使用方式。
     /// </summary>
     private void ToggleLogCollapsed(Panel logPad)
     {
@@ -572,83 +760,75 @@ internal sealed class GuiForm : Form
         logPad.Visible = !_logCollapsed;
         _logCard.ActionText = _logCollapsed ? "展开" : "收起";
         _logCard.Invalidate();
+        ApplyContentLayout();
+        Log(_logCollapsed ? "日志区已收起，点「展开」恢复。" : "日志区已展开。");
+    }
 
-        if (!_stacked)
+    /// <summary>
+    /// 应用内容区布局：卡片在上、日志在下的两行布局。
+    /// 收起日志时第二行高度归零，卡片吃满全部空间。
+    /// </summary>
+    private void ApplyContentLayout()
+    {
+        if (_contentGrid == null || _patchCard == null || _logCard == null) return;
+
+        _contentGrid.SuspendLayout();
+        try
         {
-            _contentGrid.SuspendLayout();
+            _contentGrid.ColumnCount = 1;
+            _contentGrid.RowCount = _logCollapsed ? 1 : 2;
+
             _contentGrid.ColumnStyles.Clear();
+            _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+            _contentGrid.RowStyles.Clear();
             if (_logCollapsed)
             {
-                _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-                _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+                _contentGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             }
             else
             {
-                _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
-                _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+                _contentGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 62));
+                _contentGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 38));
             }
+
+            _contentGrid.SetCellPosition(_patchCard, new TableLayoutPanelCellPosition(0, 0));
+            _patchCard.Margin = _logCollapsed
+                ? new Padding(0)
+                : new Padding(0, 0, 0, Tokens.S3);
+
+            if (!_logCollapsed)
+            {
+                _contentGrid.SetCellPosition(_logCard, new TableLayoutPanelCellPosition(0, 1));
+                _logCard.Margin = new Padding(0);
+            }
+        }
+        finally
+        {
             _contentGrid.ResumeLayout(true);
         }
-
-        Log(_logCollapsed ? "日志区已收起，点「展开」恢复。" : "日志区已展开。");
     }
 
     private void RelayoutForWidth(int width)
     {
-        // 内容区可用宽度扣掉侧栏与左右边距后仍不足 620 时改为上下堆叠
+        // 内容区可用宽度扣掉侧栏与左右边距后仍不足 620 时进入紧凑模式
         int contentWidth = width - Tokens.S5 * 2;
-        bool shouldStack = contentWidth < 620;
-        if (shouldStack == _stacked) return;
-        _stacked = shouldStack;
+        bool compact = contentWidth < 620;
 
-        // 窄窗口下日志自动收起：卡片是主工作流，日志是低频信息。
-        // 只在进入窄布局时自动收一次，之后尊重用户的显式选择。
-        if (shouldStack && !_logCollapsed && _logPad != null)
+        // 只在「进入窄布局」时自动收一次日志，之后尊重用户显式选择
+        if (compact && !_compactApplied && !_logCollapsed && _logPad != null)
         {
             _logCollapsed = true;
             _logPad.Visible = false;
             _logCard.ActionText = "展开";
             _logCard.Invalidate();
         }
+        _compactApplied = compact;
 
-        _contentGrid.SuspendLayout();
-        _contentGrid.ColumnStyles.Clear();
-        _contentGrid.RowStyles.Clear();
-
-        if (shouldStack)
-        {
-            _contentGrid.ColumnCount = 1;
-            _contentGrid.RowCount = 2;
-            _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            _contentGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 52));
-            _contentGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 48));
-            _contentGrid.SetCellPosition(_patchCard, new TableLayoutPanelCellPosition(0, 0));
-            _contentGrid.SetCellPosition(_logCard, new TableLayoutPanelCellPosition(0, 1));
-            _patchCard.Margin = new Padding(0, 0, 0, Tokens.S3);
-        }
-        else
-        {
-            _contentGrid.ColumnCount = 2;
-            _contentGrid.RowCount = 1;
-            // 尊重用户手动收起的日志：窗口从窄拉宽后不该把它重新撑开
-            if (_logCollapsed)
-            {
-                _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-                _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
-            }
-            else
-            {
-                _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
-                _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
-            }
-            _contentGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            _contentGrid.SetCellPosition(_patchCard, new TableLayoutPanelCellPosition(0, 0));
-            _contentGrid.SetCellPosition(_logCard, new TableLayoutPanelCellPosition(1, 0));
-            _patchCard.Margin = new Padding(0, 0, Tokens.S3, 0);
-        }
-
-        _contentGrid.ResumeLayout(true);
+        ApplyContentLayout();
     }
+
+    private bool _compactApplied;
 
     private Control BuildStatusBar()
     {
@@ -680,12 +860,16 @@ internal sealed class GuiForm : Form
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        // 状态栏改为反映「适配包 + 连接」语义，而不是旧的「附加/反作弊」。
-        // 依据 ui-design.md：状态文案要能说明当前是否可操作。
+        // 状态栏只保留「对当前任务有意义」的信息。
+        //
+        // 原来第二格是「调试端口：已连接/未连接」，但 native_memory 引擎
+        // 根本不走 CDP，这行对这类游戏永远是"未连接"，与顶部徽章的
+        // 「已连接」并列出现时自相矛盾。
+        // 改成显示引擎类型，这既真实又不需要连接状态。
         ConfigureStatusLabel(_statusAttach, "未选择适配包", Tokens.TextSecondary);
-        ConfigureStatusLabel(_statusAntiCheat, "调试端口：未知", Tokens.TextSecondary);
+        ConfigureStatusLabel(_statusAntiCheat, "引擎：—", Tokens.TextSecondary);
         ConfigureStatusLabel(_statusStartup, "开机自启：未启用", Tokens.TextSecondary);
-        ConfigureStatusLabel(_hotkeyHint, "Ctrl+Alt+F1 启用 / Ctrl+Alt+F2 停用", Tokens.TextSecondary);
+        ConfigureStatusLabel(_hotkeyHint, "快捷键：未配置", Tokens.TextSecondary);
 
         layout.Controls.Add(_statusAttach, 0, 0);
         layout.Controls.Add(_statusAntiCheat, 1, 0);
@@ -733,30 +917,114 @@ internal sealed class GuiForm : Form
 
     // ---------------- 热键 ----------------
 
+    /// <summary>
+    /// 按用户配置注册热键。
+    ///
+    /// 原来硬编码 Ctrl+Alt+F1/F2 做「全开/全关」——这两个动作价值最低，
+    /// 真正需要热键的是"把某个数值立刻改到目标值"这类高频操作。
+    /// 现在每个修改项可以在设置弹窗里单独绑定，默认全空（不占系统热键）。
+    /// </summary>
     private void InitHotkeys()
     {
+        _hotkeys?.Dispose();
         _hotkeys = new HotkeyManager(Handle);
-        var failures = new List<string>();
+        RebuildHotkeys();
+    }
 
-        // 成组注册：任一失败则回滚已注册项，不留半套热键
-        if (!_hotkeys.TryRegister("Ctrl+Alt+F1", () => ToggleAll(true), out string e1))
-            failures.Add($"Ctrl+Alt+F1（全部启用）: {e1}");
-        if (!_hotkeys.TryRegister("Ctrl+Alt+F2", () => ToggleAll(false), out string e2))
-            failures.Add($"Ctrl+Alt+F2（全部停用）: {e2}");
+    /// <summary>
+    /// 按当前 _prefs 重建全部修改项热键。
+    /// 配置弹窗保存后调用，使得改动立即生效而不必重启。
+    /// </summary>
+    /// <summary>
+    /// 打开某个修改项的设置弹窗（双击名称触发）。
+    /// 保存后重建热键，使改动立即生效。
+    /// </summary>
+    private void ShowEntrySettings(string semantic, string displayName)
+    {
+        if (_adapter == null) return;
 
-        if (failures.Count > 0)
+        var ep = _prefs.ForEntry(_adapter.Id, semantic);
+
+        // 同适配包内查重：不能给两个修改项绑同一个组合键
+        bool IsDuplicate(string spec) =>
+            _adapter.Bindings.Any(b =>
+                !string.Equals(b.Semantic, semantic, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(_prefs.ForEntry(_adapter.Id, b.Semantic).Hotkey, spec,
+                                 StringComparison.OrdinalIgnoreCase));
+
+        using var dlg = new EntrySettingsDialog(_prefs, ep, displayName, IsDuplicate);
+        if (dlg.ShowDialog(this) == DialogResult.OK && dlg.Saved)
         {
-            _hotkeys.Dispose();          // 回滚：注销已成功的
-            _hotkeys = new HotkeyManager(Handle);
-            _hotkeyHint.Text = "热键不可用";
-            _hotkeyHint.ForeColor = Tokens.Warning;
-            foreach (string f in failures) Log("[警告] 热键注册失败：" + f);
-            Log("[警告] 已回滚全部热键，避免只注册一半。可在设置里改用其他组合。");
+            RebuildHotkeys();
+            BuildValueCards();     // 折叠状态可能变了，重建以反映
+            Log($"[设置] {displayName}：快捷键 {(string.IsNullOrEmpty(ep.Hotkey) ? "未设置" : ep.Hotkey)}"
+                + (ep.Collapsed ? "，已折叠" : ""));
+        }
+    }
+
+    private void RebuildHotkeys()
+    {
+        if (_hotkeys == null || _adapter == null) return;
+
+        var items = new List<(string Key, string Spec, Action Action)>();
+
+        foreach (var b in _adapter.Bindings)
+        {
+            var ep = _prefs.ForEntry(_adapter.Id, b.Semantic);
+            if (string.IsNullOrWhiteSpace(ep.Hotkey)) continue;
+
+            string semantic = b.Semantic;
+            items.Add((
+                Prefs.EntryKey(_adapter.Id, semantic),
+                ep.Hotkey,
+                () => TriggerEntryHotkey(semantic)));
+        }
+
+        if (items.Count == 0)
+        {
+            _hotkeyHint.Text = "快捷键：未配置";
+            _hotkeyHint.ForeColor = Tokens.TextSecondary;
+            return;
+        }
+
+        if (_hotkeys.RegisterAll(items, out List<string> errors))
+        {
+            _hotkeyHint.Text = $"快捷键：{items.Count} 项已绑定";
+            _hotkeyHint.ForeColor = Tokens.Success;
+            Log($"[热键] 已注册 {items.Count} 个修改项快捷键");
         }
         else
         {
-            Log("热键就绪：Ctrl+Alt+F1 全部启用，Ctrl+Alt+F2 全部停用");
+            _hotkeyHint.Text = "快捷键：注册失败";
+            _hotkeyHint.ForeColor = Tokens.Warning;
+            foreach (string e in errors) Log("[警告] 热键：" + e);
         }
+    }
+
+    /// <summary>
+    /// 热键触发的动作：把该语义改到用户设定的目标值。
+    ///
+    /// 集合语义（如员工好感度）整体改；单值语义直接写。
+    /// 目标值取卡片输入框当前内容；为空则不做任何事并提示。
+    /// </summary>
+    private void TriggerEntryHotkey(string semantic)
+    {
+        if (_adapter == null) return;
+
+        string target = null;
+        if (_cards.TryGetValue(semantic, out var card))
+            target = card.CurrentInputText;
+        else if (_collectionCards.TryGetValue(semantic, out var cc))
+            target = cc.FirstInputText;
+
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            Log($"[热键] {Semantics.Display(semantic)}：输入框为空，未执行");
+            return;
+        }
+
+        Log($"[热键] {Semantics.Display(semantic)} → {target}");
+        _ = ApplyValueAsync(semantic, target);
     }
 
     protected override void WndProc(ref Message m)
@@ -855,6 +1123,12 @@ internal sealed class GuiForm : Form
         {
             case GameAdapter a:
                 StopAllWatchers("切换游戏");
+
+                // 切到另一个游戏时必须清定位缓存。
+                // 缓存里存的是上一个游戏的 Userdata 地址，
+                // 复用它会读到另一个进程的随机内存，表现为"切回来就加载失败"。
+                SaveLocator.Invalidate();
+
                 _adapter = a;
                 _profile = null;
                 BuildValueCards();
@@ -865,6 +1139,8 @@ internal sealed class GuiForm : Form
                 break;
 
             case GameProfile p:
+                StopAllWatchers("切换 profile");
+                SaveLocator.Invalidate();
                 _adapter = null;
                 _profile = p;
                 BuildPatchRows();
@@ -915,6 +1191,7 @@ internal sealed class GuiForm : Form
                 // Fill 会让它被 TableLayoutPanel 压成 0 高度而看不见。
                 var cc = new CollectionCard(b.Semantic, CollectionDisplayName(b.Semantic));
                 cc.ApplyRequested += (sem, id, v) => _ = ApplyCollectionValueAsync(sem, id, v);
+                cc.EntrySettingsRequested += (sem, id, name) => ShowEntrySettings(sem, name);
                 _collectionCards[b.Semantic] = cc;
                 continue;
             }
@@ -950,7 +1227,20 @@ internal sealed class GuiForm : Form
         }
 
         _patchHost.Controls.Add(grid);
-        _patchHost.Resize += (_, _) => RelayoutGrid(grid);
+        // 防抖：拖动窗口时 Resize 会以 60fps 触发，
+        // 每次都重排会在高卡片数量下累积成明显卡顿。
+        // 延迟到用户停手 80ms 后只排一次，拖动过程零开销。
+        _relayoutDebounce = new System.Windows.Forms.Timer { Interval = 80 };
+        _relayoutDebounce.Tick += (_, _) =>
+        {
+            _relayoutDebounce.Stop();
+            RelayoutGrid(grid);
+        };
+        _patchHost.Resize += (_, _) =>
+        {
+            _relayoutDebounce.Stop();
+            _relayoutDebounce.Start();
+        };
         RelayoutGrid(grid);
     }
 
@@ -986,58 +1276,73 @@ internal sealed class GuiForm : Form
         catch (Exception ex) { Log("[异常] " + ex.Message); }
     }
 
+    /// <summary>
+    /// 按容器宽度重排卡片网格。
+    ///
+    /// 只在「列数变化」时重建控件；纯宽度变化只更新行高。
+    /// 之前每次 resize 都 Controls.Clear() 再全部 Add，
+    /// 拖窗口时 60fps 等于每秒重建 60 次全部控件，肉眼可见卡顿——
+    /// 而且重建会丢失输入框里正在输入的内容。
+    /// </summary>
     private void RelayoutGrid(TableLayoutPanel grid)
     {
         if (grid == null || grid.IsDisposed) return;
         int w = _patchHost.ClientSize.Width - _patchHost.Padding.Horizontal;
         if (w < 200) return;
 
-        // 集合卡片一行要放「名字+数值+输入框+应用」，实测 340px 才不裁名字。
+        // 集合卡片一行要放「名字+数值+输入框+应用」，实测 380px 才不裁名字。
         const int minCol = 380;
         int cols = Math.Max(1, w / minCol);
         if (cols > 2) cols = 2;
 
-        // 单值卡片与集合卡片都要铺进网格。只取 _cards 会导致集合卡片
-        // 完全不显示（它不在 _cards 里），表现为界面上只剩一张金币卡。
         var cards = new List<Control>();
         cards.AddRange(_cards.Values);
         cards.AddRange(_collectionCards.Values);
         if (cards.Count == 0) return;
 
-        grid.SuspendLayout();
-        grid.Controls.Clear();
-        grid.ColumnStyles.Clear();
-        grid.RowStyles.Clear();
-        grid.ColumnCount = cols;
-        for (int i = 0; i < cols; i++)
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / cols));
-
         int rows = (cards.Count + cols - 1) / cols;
-        grid.RowCount = rows;
-        for (int i = 0; i < rows; i++)
+
+        // 结构没变（列数相同、子控件数量相同）就跳过重建
+        bool structureSame = grid.ColumnCount == cols
+                          && grid.RowCount == rows
+                          && grid.Controls.Count == cards.Count;
+
+        grid.SuspendLayout();
+        try
         {
-            // 行高按「本行最高卡片的真实内容高度」算。
-            // 不能读 Control.Height：表格行高会反过来钳制卡片，
-            // 读到的永远是上一次布局的值，导致永远差一截（10 行只显示 3 行）。
-            int maxH = 0;
-            for (int k = i * cols; k < Math.Min((i + 1) * cols, cards.Count); k++)
+            if (!structureSame)
             {
-                int h = cards[k] is CollectionCard cc ? cc.RequiredHeight : cards[k].Height;
-                maxH = Math.Max(maxH, h);
+                grid.Controls.Clear();
+                grid.ColumnStyles.Clear();
+                grid.RowStyles.Clear();
+                grid.ColumnCount = cols;
+                for (int i = 0; i < cols; i++)
+                    grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / cols));
+
+                grid.RowCount = rows;
+                for (int i = 0; i < rows; i++)
+                    grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 190));
+
+                for (int i = 0; i < cards.Count; i++)
+                    grid.Controls.Add(cards[i], i % cols, i / cols);
             }
-            grid.RowStyles.Add(new RowStyle(SizeType.Absolute, Math.Max(maxH + 8, 190)));
+
+            // 行高每轮都按内容重算：集合卡片的条目数会变
+            for (int i = 0; i < rows && i < grid.RowStyles.Count; i++)
+            {
+                int maxH = 0;
+                for (int k = i * cols; k < Math.Min((i + 1) * cols, cards.Count); k++)
+                {
+                    int h = cards[k] is CollectionCard cc ? cc.RequiredHeight : cards[k].Height;
+                    maxH = Math.Max(maxH, h);
+                }
+                grid.RowStyles[i].Height = Math.Max(maxH + 8, 190);
+            }
         }
-
-        // Dock=None 的卡片要显式给定宽度：按列宽均分。
-        // 高度用卡片自算值（SetItems 里按条目数得出），行高再按它设。
-        int cellW = Math.Max(280, w / cols);
-        foreach (Control card in cards)
-            card.Width = cellW - 12;
-
-        for (int i = 0; i < cards.Count; i++)
-            grid.Controls.Add(cards[i], i % cols, i / cols);
-
-        grid.ResumeLayout(true);
+        finally
+        {
+            grid.ResumeLayout(true);
+        }
     }
 
     /// <summary>异步刷新全部数值（合并成 2 次往返，不阻塞 UI）。</summary>

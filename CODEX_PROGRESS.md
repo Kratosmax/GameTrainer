@@ -1,7 +1,7 @@
 # GameTrainer 接续状态
 
 最后校准：2026-10-21。版本源 `Directory.Build.props` 的 `GameTrainerVersion = 0.1.0`，.NET 8 / WinForms / Windows x64。
-本仓库由 `C:\Users\11726\.agents\skills\game-trainer` 的产物迁移而来，**skill 本体仍留在原处**（`~/.agents/skills/game-trainer/SKILL.md`），本仓库只是程序工程，`SKILL.md` 已加入 `.gitignore`。
+本仓库由 `~/.agents/skills/game-trainer` 的产物迁移而来，**skill 本体仍留在原处**（`~/.agents/skills/game-trainer/SKILL.md`），本仓库只是程序工程，`SKILL.md` 已加入 `.gitignore`。
 
 Git 状态：`main` 分支，已 `git init` 并有本轮提交，**无 remote、无标签**。跨设备接续需先建远端并推送后才成立。
 
@@ -548,3 +548,48 @@ inst.SetInstanceVariableValue(idx, VAL);
 
 每到收尾：更新「最后校准」、快照表、真实跑过的命令与结果、缺陷表新增项、待办增删。删除失效状态，不写逐轮聊天记录。
 线上 Release、CI、远端分支未核验时必须明确写「未核验」，不得写成已完成。
+
+## 2026-10-22 九项改造（进行中）
+
+用户提出 9 项问题，按 P0→P3 顺序推进。本轮完成 P0/P1/P2 与 P3 主体。
+
+### 已完成并验证
+
+| 编号 | 问题 | 修法 | 验证 |
+|---|---|---|---|
+| 1 | 集合卡片应用按钮丢失 | 重写 CollectionCard：TableLayoutPanel 列约束替代手工 Left/Width。手工定位时 SetItems 阶段宽度为 0，RelayoutRows 提前返回，按钮留在硬编码坐标被裁掉 | 截图确认按钮在 |
+| 2 | 拖动窗口卡顿 | RelayoutGrid 改为「结构不变则只更新行高」，Resize 加 80ms 防抖 Timer | 编译通过，待拖动实测 |
+| 3 | 日志折叠效果差 | 从「压窄右列到 180px」改为「底部抽屉」，收起只留标题栏 | 截图确认为底部抽屉 |
+| 4 | 切换游戏后加载失败 | OnProfileSelected 里调 SaveLocator.Invalidate()。原缓存留着上个游戏的地址 | 代码审查确认 |
+| 5 | 已连接/未连接双状态 | 删掉底部「调试端口」行，native_memory 引擎改为显示「原生内存 · 无需调试端口」 | 截图确认 |
+| 9 | 快捷键不可自定义 | 新增 Prefs（%LOCALAPPDATA%\GameTrainer\prefs.json）+ EntrySettingsDialog（双击修改项名称打开）+ HotkeyManager 重写（支持全部按键、按项注销、批量回滚）。默认全空，不再硬编码 F1/F2 | 编译通过，待交互实测 |
+| 8 | 自动更新缺代理配置 | Prefs.HttpProxy 支持 auto/custom/direct，UpdateClient.ResolveProxy 优先读它；设置页新增「网络」区块 | 编译通过 |
+| 6/7 | 启动器式首页 | 新增 HomePage + GameCard + AdapterRepository。首页游戏网格，点已安装进修改页，点未下载触发下载。图标取 exe 关联图标，无则名字首字占位。适配包从 GitHub raw 的 adapters/index.json 下载，SHA256 防损坏 | 截图确认首页、卡片、图标、卸载按钮 |
+
+### 新增文件
+
+- `src/GameTrainer/Core/Prefs.cs` — 用户偏好（快捷键、代理、折叠状态）
+- `src/GameTrainer/EntrySettingsDialog.cs` — 修改项设置弹窗
+- `src/GameTrainer/HomePage.cs` — 首页游戏网格
+- `src/GameTrainer/GameCard.cs` — 游戏卡片控件
+- `src/GameTrainer/Adapter/AdapterRepository.cs` — 适配包下载/安装/卸载
+- `tools/build-adapter-index.ps1` — 生成 adapters/index.json
+
+### 脱敏（推送前已完成）
+
+| 位置 | 处理 |
+|---|---|
+| adapters/*/adapter.json | installDir 清空为空串，改用自动探测 |
+| adapters/hospitalrhapsody/README.md | 存档路径改占位符 |
+| CODEX_PROGRESS.md | 用户名路径改 `~/.agents/skills/game-trainer` |
+| src/UiShot/Program.cs | 同上 |
+| tools/parse-solcesto-save.py | 删除（失败路线遗留，结论不可信且含本机路径） |
+
+复查：`git grep '11726\|LocalLow'` 无命中。
+
+### 待办
+
+- 拖动窗口卡顿需人工实测确认
+- 快捷键与设置弹窗需交互实测
+- 适配包下载需先推送 adapters/index.json 到远端才能验证端到端
+- 打包 Lite 预览包

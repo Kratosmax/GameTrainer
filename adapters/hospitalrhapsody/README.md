@@ -4,7 +4,7 @@
 
 - Unity 2022.3.62 + IL2CPP v31
 - `GameAssembly.dll` 42.4 MB / `global-metadata.dat` 10.7 MB
-- 存档：`%LOCALAPPDATA%Low\Hospital Rhapsody\Save\Save1-3.json`
+- 存档：`%LOCALAPPDATA%Low\<游戏名>\Save\Save1-3.json`
   —— **Base64 + AES 加密（熵 8.0），不可手改**，只能改运行时内存
 
 ## 内存结构（字段偏移来自 Il2CppDumper 的 dump.cs，全部实测验证）

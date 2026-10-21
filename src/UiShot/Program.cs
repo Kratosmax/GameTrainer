@@ -21,7 +21,7 @@ internal static class Program
         ApplicationConfiguration.Initialize();
 
         string skillRoot = args.Length > 0 ? args[0]
-            : @"C:\Users\11726\.agents\skills\game-trainer";
+            : @"<skill目录>";
         string outDir = args.Length > 1 ? args[1] : Path.Combine(skillRoot, "temp", "ui-shot");
         Directory.CreateDirectory(outDir);
 

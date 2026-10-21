@@ -125,6 +125,25 @@ internal sealed class ProfileListBox : Panel
         ? _rows[_selectedIndex].Tag
         : null;
 
+    /// <summary>
+    /// 按 tag 选中某一行（首页点卡片进入游戏时用）。
+    /// 找不到时不动选中态，返回 false 让调用方决定怎么办。
+    /// </summary>
+    public bool SelectTag(object tag)
+    {
+        for (int i = 0; i < _rows.Count; i++)
+        {
+            if (ReferenceEquals(_rows[i].Tag, tag) || Equals(_rows[i].Tag, tag))
+            {
+                _selectedIndex = i;
+                Invalidate();
+                SelectionChanged?.Invoke(this, EventArgs.Empty);
+                return true;
+            }
+        }
+        return false;
+    }
+
     public void Clear()
     {
         foreach (ProfileRow r in _rows) r.Dispose();

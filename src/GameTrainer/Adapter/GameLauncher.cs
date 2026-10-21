@@ -111,6 +111,8 @@ internal static class GameLauncher
     /// <summary>
     /// 定位 exe 完整路径。优先级：installDir → 已运行进程路径 → 常见盘符的 Games 目录。
     /// </summary>
+    internal static string ResolveExePath(GameAdapter adapter) => ResolveExe(adapter, _ => { });
+
     private static string ResolveExe(GameAdapter adapter, Action<string> P)
     {
         // a) 适配包指定了安装目录

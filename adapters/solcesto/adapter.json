@@ -7,7 +7,7 @@
     "connection":  {
                        "debugPort":  9222,
                        "titleFilter":  "SolCesto",
-                       "installDir":  "E:\\Games\\Sol Cesto",
+                       "installDir":  "",
                        "launchTimeoutSec":  30
                    },
     "engineOptions":  {

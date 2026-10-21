@@ -47,11 +47,26 @@ internal static class UpdateClient
         { Timeout = TimeSpan.FromSeconds(30) };
 
     /// <summary>
-    /// 解析代理：环境变量优先，其次系统代理。
-    /// 两者都没有时返回 null，走直连（直连失败时错误提示会告诉用户怎么办）。
+    /// 解析代理，优先级：用户手动设置 → 环境变量 → 系统代理 → 探测常见本地端口。
+    ///
+    /// 手动设置入口在设置页「网络」区块。用户能显式指定
+    /// http://host:port 或强制直连，不必依赖自动探测。
+    /// 更新检查与适配包下载共用这一套解析（网络代理参考：两层线路必须共享同一策略）。
     /// </summary>
     private static IWebProxy ResolveProxy()
     {
+        // 0) 用户手动配置
+        string manual = ReadManualProxySetting();
+        if (!string.IsNullOrWhiteSpace(manual))
+        {
+            if (manual.Equals("direct", StringComparison.OrdinalIgnoreCase))
+                return null;   // 强制直连
+
+            if (!manual.Equals("auto", StringComparison.OrdinalIgnoreCase) &&
+                Uri.TryCreate(manual, UriKind.Absolute, out var manualUri))
+                return new WebProxy(manualUri);
+        }
+
         // 1) 环境变量（HTTPS_PROXY / HTTP_PROXY / ALL_PROXY），大小写都试
         foreach (string name in new[] { "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy" })
         {
@@ -79,6 +94,21 @@ internal static class UpdateClient
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// 读用户手动代理设置。读失败返回空（视为 auto），不影响更新流程。
+    /// </summary>
+    private static string ReadManualProxySetting()
+    {
+        try
+        {
+            return Prefs.Load().HttpProxy ?? "";
+        }
+        catch
+        {
+            return "";
+        }
     }
 
     /// <summary>本机回环端口是否在监听。超时必须短，不能让探测拖慢启动。</summary>

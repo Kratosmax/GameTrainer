@@ -135,7 +135,11 @@ internal sealed class GameAdapter
         return errs;
     }
 
-    private static readonly JsonSerializerOptions JsonOpts = new()
+    /// <summary>
+    /// 适配包 JSON 的解析选项。对外公开是因为适配包仓库也要用同一套规则
+    /// 校验远端下载的内容，两边解析口径不一致会出现"装上了但读不了"。
+    /// </summary>
+    internal static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNameCaseInsensitive = true,
         ReadCommentHandling = JsonCommentHandling.Skip,

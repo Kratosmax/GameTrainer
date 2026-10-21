@@ -589,6 +589,7 @@ internal sealed class SettingsForm : Form
 
     // ---- 更新区（关于页最上方） ----
 
+    private readonly Prefs _prefs = Prefs.Load();
     private CheckBox _autoUpdateBox;
     private Label _updateStatus;
     private FlatButton _checkUpdateBtn;
@@ -598,6 +599,173 @@ internal sealed class SettingsForm : Form
     /// 更新区：自动检查开关 + 当前版本 + 状态 + 检查按钮。
     /// 结构照 PinNote 的设置页更新小节。
     /// </summary>
+    /// <summary>
+    /// 网络子区块：手动指定 HTTP 出网代理。
+    ///
+    /// 自动探测已经能覆盖大多数情况（环境变量 → 系统代理 → 常见端口），
+    /// 但用户仍需要显式指定：企业代理、非标准端口、或想强制直连。
+    /// 更新检查与适配包下载共用这一份设置。
+    /// </summary>
+    private void RenderNetworkSubsection()
+    {
+        var netTitle = Body("网络", Tokens.TextPrimary);
+        netTitle.Font = Tokens.FontBodyStrong;
+        _flow.Controls.Add(netTitle);
+
+        var hint = new Label
+        {
+            Text = "更新检查与适配包下载共用的出网方式。自动会依次尝试环境变量、系统代理与常见本地端口。",
+            Font = Tokens.FontCaption,
+            ForeColor = Tokens.TextMuted,
+            AutoSize = false,
+            Width = ContentWidth,
+            Height = 34,
+            Margin = new Padding(0, 0, 0, Tokens.S2),
+            BackColor = Tokens.Surface
+        };
+        _flow.Controls.Add(hint);
+
+        var row = new Panel
+        {
+            Width = ContentWidth,
+            Height = 38,
+            Margin = new Padding(0, 0, 0, Tokens.S1),
+            BackColor = Tokens.Surface
+        };
+
+        var modeLabel = new Label
+        {
+            Text = "出网方式",
+            Font = Tokens.FontBody,
+            ForeColor = Tokens.TextPrimary,
+            AutoSize = false,
+            Width = 90,
+            Height = 34,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Location = new Point(0, 0),
+            BackColor = Tokens.Surface
+        };
+
+        _proxyMode = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Font = Tokens.FontBody,
+            Width = 150,
+            Location = new Point(96, 5),
+            BackColor = Tokens.Surface,
+            ForeColor = Tokens.TextPrimary
+        };
+        _proxyMode.Items.AddRange(new object[] { "自动", "自定义", "强制直连" });
+
+        string current = _prefs.HttpProxy ?? "auto";
+        if (current.Equals("direct", StringComparison.OrdinalIgnoreCase)) _proxyMode.SelectedIndex = 2;
+        else if (current.Equals("auto", StringComparison.OrdinalIgnoreCase) || current.Length == 0) _proxyMode.SelectedIndex = 0;
+        else _proxyMode.SelectedIndex = 1;
+
+        _proxyInput = new RoundedField
+        {
+            Width = 260,
+            Location = new Point(258, 4),
+            BackColor = Tokens.Surface
+        };
+        _proxyInput.Text = _proxyMode.SelectedIndex == 1 ? current : "";
+        _proxyInput.Enabled = _proxyMode.SelectedIndex == 1;
+
+        _proxyMode.SelectedIndexChanged += (_, _) =>
+        {
+            _proxyInput.Enabled = _proxyMode.SelectedIndex == 1;
+            SaveProxySetting();
+        };
+
+        row.Controls.Add(modeLabel);
+        row.Controls.Add(_proxyMode);
+        row.Controls.Add(_proxyInput);
+        _flow.Controls.Add(row);
+
+        var testRow = new Panel
+        {
+            Width = ContentWidth,
+            Height = 38,
+            Margin = new Padding(0, 0, 0, Tokens.S2),
+            BackColor = Tokens.Surface
+        };
+
+        var saveBtn = new FlatButton
+        {
+            Text = "保存",
+            Kind = ButtonKind.Secondary,
+            Width = 80,
+            Height = 30,
+            Location = new Point(96, 2)
+        };
+        saveBtn.Click += (_, _) => { SaveProxySetting(); };
+
+        _proxyStatus = new Label
+        {
+            Text = "",
+            Font = Tokens.FontCaption,
+            ForeColor = Tokens.TextMuted,
+            AutoSize = false,
+            Width = 320,
+            Height = 34,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Location = new Point(186, 0),
+            BackColor = Tokens.Surface
+        };
+
+        testRow.Controls.Add(saveBtn);
+        testRow.Controls.Add(_proxyStatus);
+        _flow.Controls.Add(testRow);
+    }
+
+    private ComboBox _proxyMode;
+    private RoundedField _proxyInput;
+    private Label _proxyStatus;
+
+    /// <summary>
+    /// 保存代理设置。自定义模式必须能解析成合法 http/https URI，
+    /// 否则拒绝保存——避免存进去之后所有下载静默失败。
+    /// </summary>
+    private void SaveProxySetting()
+    {
+        string value;
+        switch (_proxyMode.SelectedIndex)
+        {
+            case 2:
+                value = "direct";
+                break;
+            case 1:
+                value = _proxyInput.Text.Trim();
+                if (value.Length == 0)
+                {
+                    SetProxyStatus("请输入代理地址，例如 http://127.0.0.1:7890", Tokens.Danger);
+                    return;
+                }
+                if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+                    (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+                {
+                    SetProxyStatus("只支持 http:// 或 https:// 开头的地址", Tokens.Danger);
+                    return;
+                }
+                break;
+            default:
+                value = "auto";
+                break;
+        }
+
+        _prefs.HttpProxy = value;
+        if (_prefs.Save())
+            SetProxyStatus("已保存", Tokens.Success);
+        else
+            SetProxyStatus("保存失败：配置目录不可写", Tokens.Danger);
+    }
+
+    private void SetProxyStatus(string text, Color color)
+    {
+        if (_proxyStatus == null) return;
+        _proxyStatus.Text = text;
+        _proxyStatus.ForeColor = color;
+    }
     private void RenderUpdateSection()
     {
         Title("更新");
@@ -639,6 +807,8 @@ internal sealed class SettingsForm : Form
         row.Controls.Add(_autoUpdateBox);
         row.Controls.Add(ver);
         _flow.Controls.Add(row);
+
+        RenderNetworkSubsection();
 
         _updateStatus = new Label
         {
