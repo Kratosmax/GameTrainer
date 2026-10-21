@@ -593,3 +593,27 @@ inst.SetInstanceVariableValue(idx, VAL);
 - 快捷键与设置弹窗需交互实测
 - 适配包下载需先推送 adapters/index.json 到远端才能验证端到端
 - 打包 Lite 预览包
+
+### 版本与打包（2026-10-22）
+
+版本 `1.0.0` → `1.1.0`（新增启动器式信息架构 = 完整用户功能，按 skill 规则升 minor）。
+
+```
+dotnet build GameTrainer.sln -c Release -m:1   → 0 警告 0 错误
+python tools/check-contrast.py                 → 全部 PASS
+python tools/review-ui.py                      → 仅原有建议项
+powershell -File build\package.ps1 -Channel Lite -PreviewOnly
+  → GameTrainer-1.1.0-Lite-preview.zip  348,562 字节
+    SHA256=D447D571D11AA109979723FC6A3BE66EFE2E179135B57E7E866C8182C72F95CC
+```
+
+包内程序已验证可运行：
+```
+temp\preview\verify\GameTrainer.exe adapters
+  → 已安装 2 个适配包（hospitalrhapsody / solcesto）
+  → ProductVersion = 1.1.0+b6e15db
+```
+
+### 本轮提交
+
+`b6e15db` feat: 启动器式首页 + 九项问题修复（22 文件，+2091 −393）
