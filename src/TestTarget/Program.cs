@@ -32,6 +32,30 @@ internal static unsafe class Program
     private static string _savePath;
     private static readonly byte[] AnchorBytes = { 0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34, 0x56, 0x78 };
 
+    /// <summary>
+    /// 指针槽：一个固定地址的 8 字节变量，内容指向状态块。
+    ///
+    /// 这是真实游戏最常见的结构：某个基址存指针，指针指向堆对象。
+    /// 有了它才能验证 chain（基址 + 偏移 → 解引用 → + 偏移 → 终点）。
+    ///
+    /// 用 VirtualAlloc 在固定地址申请，保证每次运行地址相同——
+    /// .NET 的静态字段位置随 JIT 变化，不能当 chain 起点。
+    /// </summary>
+    private static void* s_slotFixedAddr;
+
+    /// <summary>指针槽的固定地址。选一个用户态低地址区，避开常规分配。</summary>
+    private const ulong SlotAddress = 0x0000_0000_3000_0000UL;
+
+    private const uint MEM_COMMIT = 0x1000;
+    private const uint MEM_RESERVE = 0x2000;
+    private const uint PAGE_READWRITE = 0x04;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern void* VirtualAlloc(void* lpAddress, nuint dwSize, uint flAllocationType, uint flProtect);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool VirtualFree(void* lpAddress, nuint dwSize, uint dwFreeType);
+
     private static int Main(string[] args)
     {
         Console.OutputEncoding = Encoding.UTF8;
@@ -46,6 +70,20 @@ internal static unsafe class Program
         s_state->Score = 1000;
         for (int i = 0; i < 8; i++) s_state->Anchor[i] = AnchorBytes[i];
         s_state->Tick = 0;
+
+        // 固定地址的指针槽：内容指向状态块。
+        // 用 VirtualAlloc 指定地址，保证每次运行都落在同一处——
+        // 这样才能用「基址 + 固定偏移」的 chain 解到它。
+        s_slotFixedAddr = VirtualAlloc((void*)(nuint)SlotAddress, 0x1000,
+                                       MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (s_slotFixedAddr == null)
+        {
+            Console.WriteLine($"警告：无法在 0x{SlotAddress:X} 分配指针槽，chain 验证将不可用");
+        }
+        else
+        {
+            *(nint*)s_slotFixedAddr = (nint)s_state;
+        }
 
         _savePath = Path.Combine(Path.GetTempPath(), "gt_test_target_save.txt");
         if (args.Length >= 2 && args[0] == "--save") _savePath = args[1];

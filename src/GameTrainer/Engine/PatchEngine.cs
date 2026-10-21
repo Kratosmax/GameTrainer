@@ -645,12 +645,65 @@ internal sealed class PatchEngine
         return hits;
     }
 
+    /// <summary>
+    /// 适配包专用：解析指针链，返回终点地址（只读）。
+    ///
+    /// chain 的语义：模块基址 + 偏移1 → 解引用 → + 偏移2 → 解引用 → … → 终点。
+    /// 与 AOB 相比的优势：基址 + 偏移不随游戏版本变化，
+    /// 只有结构体布局变了才需要调整，比字节签名稳定得多。
+    /// </summary>
+    public IntPtr ResolveChainAddress(string module, IReadOnlyList<string> chain, out string trace, out string error)
+    {
+        error = null;
+        try
+        {
+            return ResolveChain(module, chain.ToList(), out trace);
+        }
+        catch (Exception ex)
+        {
+            trace = null;
+            error = $"指针链解析失败：{ex.Message}";
+            return IntPtr.Zero;
+        }
+    }
+
     private IntPtr ResolveChain(string module, List<string> chain, out string trace)
     {
-        IntPtr baseAddr = _mem.ModuleBase(module);
-        long cur = baseAddr.ToInt64();
         var sb = new System.Text.StringBuilder();
-        sb.Append($"{module}+0x{baseAddr.ToInt64():X}");
+
+        long cur;
+        if (string.IsNullOrWhiteSpace(module))
+        {
+            // 绝对地址模式：chain[0] 是起始地址（通常是一个指针槽）。
+            //
+            // 关键：起点本身必须先解引用，因为它存的是"指向数据的指针"。
+            // 之后 chain[1..] 才是相对该数据的偏移。
+            // 若只给一个元素，则视为"直接给出目标地址"，不解引用。
+            cur = ParseOffset(chain[0]);
+            sb.Append($"0x{cur:X}");
+
+            if (chain.Count == 1)
+            {
+                trace = sb.ToString();
+                return new IntPtr(cur);
+            }
+
+            byte[] rootPtr = new byte[8];
+            if (!_mem.TryRead(new IntPtr(cur), rootPtr, out _))
+                throw new InvalidOperationException($"链起点 0x{cur:X} 读取指针失败。");
+            long rootNext = BitConverter.ToInt64(rootPtr, 0);
+            if (rootNext == 0) throw new InvalidOperationException($"链起点 0x{cur:X} 指针为空。");
+            sb.Append($" → [0x{cur:X}]=0x{rootNext:X}");
+            cur = rootNext;
+
+            chain = chain.Skip(1).ToList();
+        }
+        else
+        {
+            IntPtr baseAddr = _mem.ModuleBase(module);
+            cur = baseAddr.ToInt64();
+            sb.Append($"{module}+0x{baseAddr.ToInt64():X}");
+        }
 
         for (int i = 0; i < chain.Count; i++)
         {

@@ -89,6 +89,37 @@ internal static class MemoryBackend
         return new Session(mem, engine, blocked, reason);
     }
 
+    /// <summary>
+    /// 解析绑定指向的地址。两种定位方式二选一：
+    ///   chain —— 模块基址 + 指针链（优先：游戏更新后更稳）
+    ///   aob   —— 字节签名 + 偏移
+    /// </summary>
+    private static bool TryResolveAddress(Session session, ValueBinding b, out IntPtr addr, out string error)
+    {
+        addr = IntPtr.Zero;
+        error = null;
+
+        if (b.Chain is { Count: > 0 })
+        {
+            // module 留空 = 绝对地址模式，chain[0] 直接作为起点
+            addr = session.Engine.ResolveChainAddress(b.Module, b.Chain, out _, out error);
+            return error == null && addr != IntPtr.Zero;
+        }
+
+        if (string.IsNullOrWhiteSpace(b.Aob))
+        {
+            error = "绑定既没有 aob 也没有 chain，无法定位地址。";
+            return false;
+        }
+
+        var addrs = session.Engine.ResolveAddresses(b.Aob, b.Offsets, b.Module, requireUnique: true, out error);
+        if (error != null) return false;
+        if (addrs.Count == 0) { error = "AOB 未命中"; return false; }
+
+        addr = addrs[0];
+        return true;
+    }
+
     /// <summary>按绑定读一个值。</summary>
     public static AdapterRunner.ReadResult Read(GameAdapter adapter, ValueBinding b)
     {
@@ -98,15 +129,8 @@ internal static class MemoryBackend
 
         using (session)
         {
-            var addrs = session.Engine.ResolveAddresses(
-                b.Aob, b.Offsets, b.Module, requireUnique: true, out string aerr);
-            if (aerr != null)
+            if (!TryResolveAddress(session, b, out IntPtr addr, out string aerr))
                 return new AdapterRunner.ReadResult(b.Semantic, false, null, b.Describe(), aerr);
-
-            if (addrs.Count == 0)
-                return new AdapterRunner.ReadResult(b.Semantic, false, null, b.Describe(), "AOB 未命中");
-
-            IntPtr addr = addrs[0];
             if (!TryParseType(b.Type, out NumType nt))
                 return new AdapterRunner.ReadResult(b.Semantic, false, null, b.Describe(),
                     $"不支持的数值类型：{b.Type}");
@@ -136,12 +160,8 @@ internal static class MemoryBackend
             if (session.ReadOnly)
                 return new AdapterRunner.WriteResult(b.Semantic, false, null, null, true, session.BlockReason);
 
-            var addrs = session.Engine.ResolveAddresses(
-                b.Aob, b.Offsets, b.Module, requireUnique: true, out string aerr);
-            if (aerr != null)
+            if (!TryResolveAddress(session, b, out IntPtr addr, out string aerr))
                 return new AdapterRunner.WriteResult(b.Semantic, false, null, null, true, aerr);
-
-            IntPtr addr = addrs[0];
             if (!TryParseType(b.Type, out NumType nt))
                 return new AdapterRunner.WriteResult(b.Semantic, false, null, null, true,
                     $"不支持的数值类型：{b.Type}");

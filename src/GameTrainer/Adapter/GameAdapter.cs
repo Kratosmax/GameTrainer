@@ -96,8 +96,18 @@ internal sealed class GameAdapter
                         errs.Add($"{b.Semantic}: indexeddb_key 需要 storageKey");
                     break;
                 case "memory_aob":
-                    if (string.IsNullOrWhiteSpace(b.Aob))
-                        errs.Add($"{b.Semantic}: memory_aob 需要 aob");
+                    // aob 与 chain 二选一，不能都给（给了也没意义，语义冲突）
+                    bool hasAob = !string.IsNullOrWhiteSpace(b.Aob);
+                    bool hasChain = b.Chain is { Count: > 0 };
+                    if (!hasAob && !hasChain)
+                        errs.Add($"{b.Semantic}: memory_aob 需要 aob 或 chain（二选一）");
+                    else if (hasAob && hasChain)
+                        errs.Add($"{b.Semantic}: aob 与 chain 只能给一个");
+                    // chain 可以基于模块基址，也可以用绝对地址（module 留空，
+                    // 此时 chain[0] 直接是起始地址）。后者的典型场景是
+                    // 引擎的固定内存池，不依附于任何模块。
+                    if (hasChain && b.Chain.Count < 1)
+                        errs.Add($"{b.Semantic}: chain 至少需要一级");
                     break;
                 default:
                     errs.Add($"{b.Semantic}: 未知 kind {b.Kind}（instance_var|indexeddb_key|memory_aob）");
@@ -234,8 +244,19 @@ internal sealed class ValueBinding
     /// <summary>memory_aob：数值类型 byte/short/int/long/float/double。默认 double。</summary>
     public string Type { get; set; } = "double";
 
-    /// <summary>memory_aob：偏移列表。</summary>
+    /// <summary>memory_aob：偏移列表（aob 命中后叠加）。</summary>
     public List<string> Offsets { get; set; } = new();
+
+    /// <summary>
+    /// memory_aob：指针链。与 aob 二选一。
+    ///
+    /// 语义：Module 基址 + chain[0] → 解引用 → + chain[1] → … → 终点。
+    /// 最后一级偏移后不再解引用，直接作为目标地址。
+    ///
+    /// 比 AOB 稳定的场景：游戏更新后代码变了但数据结构没变，
+    /// 基址 + 偏移依然有效，而字节签名会失效。
+    /// </summary>
+    public List<string> Chain { get; set; }
 
     /// <summary>数值类型：number | string。默认 number。</summary>
     public string ValueType { get; set; } = "number";
