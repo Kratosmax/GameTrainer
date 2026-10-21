@@ -170,7 +170,16 @@ internal sealed class ProcessMemory : IDisposable
 
     /// <summary>
     /// 写入。写前必须已通过签名/前值校验。
-    /// 目标页不可写时临时改保护属性，写完在 finally 中恢复。
+    ///
+    /// 三道闸，任一不通过则不写：
+    ///   1. 目标必须在已提交区域内
+    ///   2. 【禁止改代码段】MEM_IMAGE 区域一律拒绝——即使能通过 VirtualProtect 改成可写，
+    ///      覆盖的是游戏指令，会触发完整性校验且几乎无法恢复。
+    ///      这条对应 skill 硬性红线「修改 .text 代码段」。
+    ///   3. 页保护属性为 NOACCESS / GUARD 时拒绝（不是"改一下就能写"的场景）
+    ///
+    /// 第 2 条是关键：AOB 签名或 chain 偏移算错时，地址可能落进 .text。
+    /// 没有这层拦截，工具会先把只读代码页改成可写再覆盖，后果不可逆。
     /// </summary>
     public void Write(IntPtr address, byte[] data)
     {
@@ -179,13 +188,32 @@ internal sealed class ProcessMemory : IDisposable
         RegionInfo info = DescribeRegion(address, data.Length)
             ?? throw new InvalidOperationException($"0x{address.ToInt64():X} 不在任何已提交区域内，拒绝写入。");
 
-        // 临时申请写权限，用完立即释放，不长期持有
+        // 闸 2：代码段/映射镜像一律拒绝。TYPE 为 MEM_IMAGE 就是可执行映像（.text 在里头）。
+        if (info.Type == NativeMethods.MEM_IMAGE)
+            throw new InvalidOperationException(
+                $"0x{address.ToInt64():X} 位于可执行映像（代码段），拒绝写入。\n" +
+                "改代码段会触发完整性校验，且几乎无法恢复。请检查 AOB 签名或 chain 偏移是否算错。");
+
+        // 闸 3：完全不可访问的页不做"强改保护再写"
+        if ((info.Protect & NativeMethods.PAGE_NOACCESS) != 0 ||
+            (info.Protect & NativeMethods.PAGE_GUARD) != 0)
+            throw new InvalidOperationException(
+                $"0x{address.ToInt64():X} 所在页保护属性为 {NativeMethods.ProtectName(info.Protect)}，拒绝写入。");
+
+        // 临时申请写权限，用完立即释放，不长期持有。
+        //
+        // 关键：按 PID 重新打开会有 PID 复用窗口（校验通过 → 进程退出 → PID 被新进程占用）。
+        // 因此打开后必须在**新句柄**上再确认一次身份，否则会写进无关进程。
         using SafeProcessHandle wh = OpenForWrite(Pid);
         if (wh.IsInvalid)
         {
             int err = Marshal.GetLastWin32Error();
             throw new InvalidOperationException($"申请写权限失败 (Win32 {err}) 于 0x{address.ToInt64():X}。");
         }
+
+        if (!Identity.StillValid(wh))
+            throw new InvalidOperationException(
+                $"写入句柄身份校验失败（{Identity}）。目标进程可能已退出或 PID 已被复用，已中止写入。");
 
         uint oldProtect = 0;
         bool changedProtect = false;

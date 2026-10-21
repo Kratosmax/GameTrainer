@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 
 namespace GameTrainer.Adapter;
@@ -59,7 +60,7 @@ internal static class AdapterRunner
 
             string script = $$"""
 (() => {
-  const RT = {{rt}};
+  const RT = {{JsonSerializer.Serialize(rt)}};
   const REQS = {{JsonSerializer.Serialize(reqs)}};
   try {
     if (!RT) return JSON.stringify({ error: '未找到运行时' });
@@ -304,7 +305,28 @@ internal static class AdapterRunner
         {
             using var cdp = CdpClient.Connect(adapter.Connection.DebugPort, adapter.Connection.TitleFilter);
             var rt = adapter.EngineOptions.RuntimePath;
-            string jsVal = b.ValueType == "string" ? JsonSerializer.Serialize(rawValue) : rawValue;
+
+            // 拼进 JS 的值必须是**可控形态**，否则命令行参数可直接注入页面脚本：
+            //   sem <游戏> write health "1); evil(("
+            // 规则：string 类型走 JSON 序列化（自带引号与转义）；
+            //       其他类型必须能解析成有限数字才允许裸插入；
+            //       解析不了就转成 JSON 字符串（引号包裹，无法逃逸成代码）。
+            string jsVal;
+            if (b.ValueType == "string")
+            {
+                jsVal = JsonSerializer.Serialize(rawValue);
+            }
+            else if (double.TryParse(rawValue, NumberStyles.Float, CultureInfo.InvariantCulture, out double num)
+                     && !double.IsNaN(num) && !double.IsInfinity(num))
+            {
+                jsVal = num.ToString("R", CultureInfo.InvariantCulture);
+            }
+            else
+            {
+                // 既不是 string 也不是合法数字：拒绝，不给注入留任何空间
+                return new WriteResult(semantic, false, null, null, b.Realtime,
+                    $"值 \"{rawValue}\" 不是合法数字（该绑定 valueType={b.ValueType}）。");
+            }
 
             string script;
             if (b.Kind == "instance_var")
@@ -337,16 +359,16 @@ internal static class AdapterRunner
     private static string BuildReadInstanceVar(string rtPath, string obj, string var) => $$"""
 (() => {
   try {
-    const rt = {{rtPath}};
+    const rt = {{JsonSerializer.Serialize(rtPath)}};
     if (!rt) return JSON.stringify({ error: '未找到运行时' });
     const cls = [...rt.GetAllObjectClasses()].find(c => c.GetName() === {{JsonSerializer.Serialize(obj)}});
-    if (!cls) return JSON.stringify({ error: '找不到对象类 {{obj}}' });
+    if (!cls) return JSON.stringify({ error: '找不到对象类 ' + {{JsonSerializer.Serialize(obj)}} });
     const insts = [...cls.GetInstances()];
-    if (insts.length === 0) return JSON.stringify({ error: '{{obj}} 当前无实例（不在对应场景？）' });
+    if (insts.length === 0) return JSON.stringify({ error: {{JsonSerializer.Serialize(obj)}} + ' 当前无实例（不在对应场景？）' });
     const inst = insts[0];
     const names = inst._GetAllInstanceVariableNames();
     const idx = names.indexOf({{JsonSerializer.Serialize(var)}});
-    if (idx < 0) return JSON.stringify({ error: '变量 {{var}} 不存在' });
+    if (idx < 0) return JSON.stringify({ error: '变量 ' + {{JsonSerializer.Serialize(var)}} + ' 不存在' });
     let v = inst.GetInstanceVariableValue(idx);
     if (typeof v === 'number' && Number.isNaN(v)) v = 'NaN';
     return JSON.stringify({ value: v });
@@ -357,16 +379,16 @@ internal static class AdapterRunner
     private static string BuildWriteInstanceVar(string rtPath, string obj, string var, string jsVal, bool dryRun) => $$"""
 (() => {
   try {
-    const rt = {{rtPath}};
+    const rt = {{JsonSerializer.Serialize(rtPath)}};
     if (!rt) return JSON.stringify({ error: '未找到运行时' });
     const cls = [...rt.GetAllObjectClasses()].find(c => c.GetName() === {{JsonSerializer.Serialize(obj)}});
-    if (!cls) return JSON.stringify({ error: '找不到对象类 {{obj}}' });
+    if (!cls) return JSON.stringify({ error: '找不到对象类 ' + {{JsonSerializer.Serialize(obj)}} });
     const insts = [...cls.GetInstances()];
-    if (insts.length === 0) return JSON.stringify({ error: '{{obj}} 当前无实例（不在对应场景？）' });
+    if (insts.length === 0) return JSON.stringify({ error: {{JsonSerializer.Serialize(obj)}} + ' 当前无实例（不在对应场景？）' });
     const inst = insts[0];
     const names = inst._GetAllInstanceVariableNames();
     const idx = names.indexOf({{JsonSerializer.Serialize(var)}});
-    if (idx < 0) return JSON.stringify({ error: '变量 {{var}} 不存在' });
+    if (idx < 0) return JSON.stringify({ error: '变量 ' + {{JsonSerializer.Serialize(var)}} + ' 不存在' });
     const before = inst.GetInstanceVariableValue(idx);
     if (!{{(dryRun ? "true" : "false")}}) inst.SetInstanceVariableValue(idx, {{jsVal}});
     const after = inst.GetInstanceVariableValue(idx);

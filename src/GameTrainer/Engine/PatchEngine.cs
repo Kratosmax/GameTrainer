@@ -137,7 +137,14 @@ internal sealed class PatchEngine
                     After = p.After,
                     ModuleName = p.Label,
                 });
-                _log.Write("write", _profile.Exe, p.Label, Hex(p.Before), Hex(p.After), p.After.Length);
+                // 审计日志失败绝不能触发下面的回滚分支：
+                // 内存已经写成功，日志写不进去只该降级为"少一条记录"，
+                // 否则会出现「磁盘满 → 已生效的修改被莫名其妙全部回滚」。
+                try
+                {
+                    _log.Write("write", _profile.Exe, p.Label, Hex(p.Before), Hex(p.After), p.After.Length);
+                }
+                catch { }
                 written++;
             }
         }
@@ -391,8 +398,21 @@ internal sealed class PatchEngine
                 After = after,
                 ModuleName = null
             });
+
             _mem.Write(address, after);
-            _log.Write("write", _profile?.Exe ?? "adapter", null, Hex(after), Hex(before), after.Length);
+
+            // 审计日志失败不能影响写入结果的判定：内存已经改了，
+            // 若这里抛异常被外层 catch，就会对使用者谎报"写入失败"，
+            // 而实际上值已经生效。日志只降级提示，不改变返回值。
+            try
+            {
+                _log.Write("write", _profile?.Exe ?? "adapter", null, Hex(after), Hex(before), after.Length);
+            }
+            catch
+            {
+                // 磁盘满 / 目录只读 / 被锁 —— 都不该让"已成功写入"变成"写入失败"
+            }
+
             return true;
         }
         catch (Exception ex)
@@ -502,15 +522,21 @@ internal sealed class PatchEngine
     }
 
     /// <summary>
-    /// 判断签名是否"自带失效风险"：签名里存在非通配字节，且该字节序列出现在
-    /// 本 patch 要写入的值中——说明写一次后签名就不匹配了。
-    /// 只做启发式提示，不影响是否允许写入。
+    /// 判断签名是否"自带失效风险"。
+    ///
+    /// 真正的判断需要比较「签名里的固定字节」与「本次要写入的字节」是否有重叠，
+    /// 但 AOB 与写入值的大小/位置都不固定，无法在这里做精确比对。
+    /// 因此这里只做**保守启发式**：完全没有通配符的签名，一旦它覆盖了被改字段，
+    /// 写一次就不再命中；含通配符的签名的常见写法是把易变字段挖掉，风险较低。
+    ///
+    /// 只用于给使用者提示，不影响是否允许写入。
     /// </summary>
     private static bool LooksLikeSelfInvalidating(string aob)
     {
         if (string.IsNullOrWhiteSpace(aob)) return false;
-        // 签名含通配符，或很短（通常是代码签名），不算自失效
+        // 含通配符 = 作者主动避开了可变字段，视为已处理
         if (aob.Contains('?')) return false;
+        // 纯固定字节签名：存在覆盖被改字段的可能性
         return true;
     }
 

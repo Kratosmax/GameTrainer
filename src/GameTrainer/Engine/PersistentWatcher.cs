@@ -56,12 +56,20 @@ internal sealed class PersistentWatcher : IDisposable
             {
                 await Task.Delay(_intervalMs, ct);
 
-                // 约束 1：先判断是否还在局内
+                // 约束 1：先判断是否仍在局内
+                //
+                // IsInGame 返回 false 有两种原因：真的退出对局，或者 CDP 抖动。
+                // 无法区分时不能立即停——否则一次网络抖动就让监控失效。
+                // 因此也走失败计数，连续多次判不出「在局内」才认为真退了。
                 if (!IsInGame(ct))
                 {
-                    StopReason = "已退出对局";
-                    Notified?.Invoke("检测到已退出对局，持久监控自动停止。");
-                    return;
+                    if (++consecutiveFailures >= 5)
+                    {
+                        StopReason = "已退出对局";
+                        Notified?.Invoke("检测到已退出对局，持久监控自动停止。");
+                        return;
+                    }
+                    continue;
                 }
 
                 // 读当前值
@@ -118,7 +126,7 @@ internal sealed class PersistentWatcher : IDisposable
                 string script = $$"""
 (() => {
   try {
-    const rt = {{_adapter.EngineOptions.RuntimePath}};
+    const rt = {{System.Text.Json.JsonSerializer.Serialize(_adapter.EngineOptions.RuntimePath)}};
     if (!rt) return JSON.stringify({ layout: null });
     const lm = rt.GetLayoutManager();
     const cur = lm && lm.GetMainRunningLayout ? lm.GetMainRunningLayout() : null;
@@ -159,6 +167,10 @@ internal sealed class PersistentWatcher : IDisposable
     public void Dispose()
     {
         Stop();
-        _cts.Dispose();
+        // 必须等循环真正退出再释放 CTS：循环可能正在写内存（耗时可达秒级），
+        // 提前释放会让它后续访问已 disposed 的对象。
+        // 参照 FreezeTask.Stop 的做法。
+        try { _loop?.Wait(2000); } catch { }
+        try { _cts.Dispose(); } catch { }
     }
 }

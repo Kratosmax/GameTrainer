@@ -10,7 +10,15 @@ namespace GameTrainer.Core;
 internal sealed class AuditLog
 {
     private readonly string _path;
-    private readonly object _lock = new();
+
+    /// <summary>
+    /// 进程级锁，不能是实例级。
+    ///
+    /// MemoryBackend 每次操作都 new 一个 AuditLog（同一路径），
+    /// 实例级锁各自独立 → 等于没有锁 → 并发 File.AppendAllText
+    /// 同一文件会抛 IOException 或写出交错的半行。
+    /// </summary>
+    private static readonly object _lock = new();
 
     public AuditLog(string path)
     {
