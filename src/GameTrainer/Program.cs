@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using GameTrainer.Adapter;
 using GameTrainer.Core;
+using GameTrainer.Core.Updates;
 using GameTrainer.Engine;
 using GameTrainer.Memory;
 using GameTrainer.Profiles;
@@ -170,6 +171,92 @@ internal static class Program
         catch { return false; }
     }
 
+    /// <summary>
+    /// update [check|install]
+    ///
+    /// check   —— 取清单、验签、比版本，只报告不下载
+    /// install —— check 通过后下载并事务式替换（需程序不在运行中）
+    /// </summary>
+    private static int CmdUpdate(string[] a)
+    {
+        string action = a.Length > 1 ? a[1].ToLowerInvariant() : "check";
+        string channel = Trust.CurrentChannel;
+        System.Version current = Trust.CurrentVersion;
+
+        Console.WriteLine($"当前版本 {current}  通道 {channel}");
+
+        try
+        {
+            string url = UpdateClient.ManifestUrlFor(channel);
+            Console.WriteLine($"清单地址 {url}");
+
+            var r = UpdateClient.CheckAsync(current, channel, url).GetAwaiter().GetResult();
+            Console.WriteLine(r.Message);
+
+            if (!r.HasUpdate)
+            {
+                Console.WriteLine("无需更新。");
+                return 0;
+            }
+
+            Console.WriteLine();
+            Console.WriteLine($"新版本 {r.Latest.Version}  {r.Latest.Size:N0} 字节");
+            Console.WriteLine($"SHA256 {r.Latest.Sha256}");
+            if (!string.IsNullOrWhiteSpace(r.Latest.ReleaseNotes))
+            {
+                Console.WriteLine();
+                Console.WriteLine("更新说明：");
+                Console.WriteLine(r.Latest.ReleaseNotes);
+            }
+
+            if (action != "install")
+            {
+                Console.WriteLine();
+                Console.WriteLine("执行 `update install` 下载并安装。");
+                return 0;
+            }
+
+            // 安装前必须确认程序不在运行：文件被占用时替换会失败，
+            // 且半途失败会留下混合版本。
+            string self = Environment.ProcessPath ?? "";
+            if (self.EndsWith("GameTrainer.exe", StringComparison.OrdinalIgnoreCase))
+            {
+                var others = System.Diagnostics.Process.GetProcessesByName("GameTrainer")
+                    .Count(p => p.Id != Environment.ProcessId);
+                if (others > 0)
+                {
+                    Console.Error.WriteLine($"[拒绝] 还有 {others} 个 GameTrainer 在运行，请先全部退出。");
+                    return 4;
+                }
+            }
+
+            string tempRoot = Path.Combine(Path.GetTempPath(), "gametrainer-update");
+            Console.WriteLine();
+            Console.WriteLine("下载中…");
+            string pkg = UpdateInstaller
+                .DownloadAsync(r.Latest, tempRoot,
+                    new Progress<double>(p => Console.Write($"\r  {p:P0}")))
+                .GetAwaiter().GetResult();
+            Console.WriteLine();
+            Console.WriteLine($"已下载并通过哈希校验：{pkg}");
+
+            string target = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+            Console.WriteLine($"安装到 {target}");
+            UpdateInstaller.Install(pkg, target, r.Latest);
+
+            try { File.Delete(pkg); } catch { }
+
+            Console.WriteLine();
+            Console.WriteLine($"[完成] 已更新到 {r.Latest.Version}，请重新启动。");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("[失败] " + ex.Message);
+            return 1;
+        }
+    }
+
     private static int Dispatch(string[] a)
     {
         switch (a[0].ToLowerInvariant())
@@ -196,6 +283,7 @@ internal static class Program
             case "preset": return CmdPreset(a);
             case "jsobj": return CmdJsObj(a);
             case "jssetvar": return CmdJsSetVar(a);
+            case "update": return CmdUpdate(a);
             case "gui": return GuiForm.Run(_skillRoot);
             default:
                 Console.Error.WriteLine($"未知命令: {a[0]}");

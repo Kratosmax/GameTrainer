@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          # 官方无 winget 包，用 choco（windows-2022 runner 预装）
+          choco install innosetup --no-progress -y
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Inno Setup 安装后找不到 ISCC.exe" }
+          Write-Host "ISCC: $iscc"
+
+      - name: Verify tag and build signed assets
+        shell: pwsh
+        env:
+          GAMETRAINER_UPDATE_SIGNING_KEY: ${{ secrets.GAMETRAINER_UPDATE_SIGNING_KEY }}
+        run: |
+          [xml]$props = Get-Content -Raw Directory.Build.props
+          $version = [string]$props.Project.PropertyGroup.GameTrainerVersion
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "标签 $env:GITHUB_REF_NAME 与 Directory.Build.props 版本 $version 不一致。"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:GAMETRAINER_UPDATE_SIGNING_KEY)) {
+            throw "缺少 secrets.GAMETRAINER_UPDATE_SIGNING_KEY（更新清单签名私钥）。"
+          }
+
+          $keyDir = Join-Path $env:RUNNER_TEMP "keys"
+          New-Item -ItemType Directory -Force -Path $keyDir | Out-Null
+          $keyPath = Join-Path $keyDir "gametrainer-update-private.pem"
+          try {
+            [IO.File]::WriteAllText($keyPath, $env:GAMETRAINER_UPDATE_SIGNING_KEY)
+
+            # 从私钥导出公钥，供发布脚本自校验（脚本会找同目录的 public.pem）
+            $rsa = [System.Security.Cryptography.RSA]::Create()
+            $rsa.ImportFromPem($env:GAMETRAINER_UPDATE_SIGNING_KEY)
+            [IO.File]::WriteAllText(
+              (Join-Path $keyDir "gametrainer-update-public.pem"),
+              $rsa.ExportSubjectPublicKeyInfoPem())
+            $rsa.Dispose()
+
+            ./build/release.ps1 -PrivateKeyPath $keyPath
+          }
+          finally {
+            Remove-Item -LiteralPath $keyDir -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [xml]$props = Get-Content -Raw Directory.Build.props
+          $version = [string]$props.Project.PropertyGroup.GameTrainerVersion
+          $root = "temp/release/v$version"
+
+          # 发布前逐项确认产物齐全，缺一个就中止——
+          # 残缺的 Release 比没有 Release 更糟：用户会下到半套东西
+          $required = @(
+            "GameTrainer-$version-Full-Setup.exe",
+            "GameTrainer-$version-Lite-Setup.exe",
+            "GameTrainer-$version-Full.zip",
+            "GameTrainer-$version-Lite.zip",
+            "update.json",
+            "update-lite.json",
+            "update-full.json",
+            "SHA256SUMS.txt"
+          )
+          foreach ($f in $required) {
+            if (-not (Test-Path (Join-Path $root $f))) { throw "缺少产物 $f" }
+          }
+
+          gh release create "v$version" `
+            "$root/GameTrainer-$version-Full-Setup.exe" `
+            "$root/GameTrainer-$version-Lite-Setup.exe" `
+            "$root/GameTrainer-$version-Full.zip" `
+            "$root/GameTrainer-$version-Lite.zip" `
+            "$root/update.json" `
+            "$root/update-lite.json" `
+            "$root/update-full.json" `
+            "$root/SHA256SUMS.txt" `
+            --title "GameTrainer $version" `
+            --notes-file RELEASE_NOTES_CURRENT.md `
+            --verify-tag

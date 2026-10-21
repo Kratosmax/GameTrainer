@@ -17,20 +17,57 @@ dotnet build GameTrainer.sln -c Release -m:1
 
 不要相信本页里没有实际运行过的测试结论。本页记录的都是已执行命令。
 
-## 当前快照（2026-10-21 核验）
+## 当前快照（2026-10-21 晚间核验）
 
 | 项 | 状态 |
 |---|---|
-| 版本 | `0.1.0`，真源 `Directory.Build.props`（实测 `ProductVersion = 0.1.0`） |
-| 分支 / 提交 / remote | `main`，本轮有提交，**无 remote** |
+| 版本 | `1.0.0`，真源 `Directory.Build.props` |
+| 分支 / 提交 / remote | `main`，见 `git log`；remote 见 `git remote -v` |
 | 编译 | `dotnet build GameTrainer.sln -c Release -m:1` → 0 警告 0 错误 |
-| UI 截图 | `temp/ui-shot/` 9 张（主窗 4 张含空状态 + 设置页 5 分类），已逐张查看 |
-| 对比度 | `python tools/check-contrast.py` → exit 0，28 项门槛全过，0 失败 |
-| 材质 | build 26300 上 `material.applied = True`（Acrylic + 客户区 frame + 系统圆角） |
-| 本地预览包 | `temp/preview/GameTrainer-0.1.0-Lite-preview.zip`，143,307 字节，SHA256 `811998BFDB97844A50DBCA89AE4BB9071A105B4F67CC36A76F1480EC6B5F2C8C` |
-| 启动方式 | `WinExe`；无参数 → GUI 常驻（实测 4 秒后仍存活，窗口标题正确）；`profiles` 等命令 stdout 正常 |
-| 业务回归 | 附加 / AOB 唯一 / dry-run / 真实写入 / `--by-profile` 还原，全部实测通过 |
-| 线上 | 无。未建 GitHub 仓库、未推送、未发布 |
+| 单元测试 | `dotnet test src/GameTrainer.Tests` → **225 全过** |
+| 对比度 | `python tools/check-contrast.py` → exit 0 |
+| UI 审查 | `python tools/review-ui.py` → exit 0 |
+| 焦点态截图 | `temp/ui-focus2/` 14 张（程序内打开 ForceFocusCue 后自截，不注入按键） |
+| 启动方式 | `Exe`（控制台子系统）+ 无参数时 `ShowWindow(SW_HIDE)` 隐藏黑框 |
+| 网络 | GitHub DNS/HTTPS/git 协议/API 全部可达，`gh` 已认证 `Kratosmax` |
+
+### 本轮（2026-10-21 晚间）修复清单
+
+六个提交，全部经双向代码评审（人 + 另一 agent 交叉审）：
+
+| 提交 | 内容 |
+|---|---|
+| `af00f97` | M1：`CdpClient.Evaluate` 实例级串行锁，消除并发竞态 |
+| `a0f43b9` | 打包：数据目录劫持修复 + 排除自测靶 profile |
+| `86ada52` | M5 连接复用 / M7 dry-run 假值 / A1 UI 冻结 / A2 刷新按钮失联 / A4 托盘气泡 / E1 崩溃路径 / V1 持久勾选清零 / V2 文案 |
+| `85ce8ec` | V4 键盘焦点可见（ForceFocusCue + UiShot 焦点态截图）/ V6 静默失败改可见反馈 |
+| `3fc89cb` | ShowNoValue 幂等化（连点累积后缀是真 bug）/ ShowBusy 标注不可达 |
+| `f10c954` | V3 悬停提示落地（挂 hint + warning，按 MeasureText 判截断）/ 删除 DoAttach 死路径 |
+
+### 本轮修复的真实缺陷（都有实测证据）
+
+| 缺陷 | 证据 |
+|---|---|
+| 写内存不校验区域类型，可覆盖代码段 | chain 指向模块+0x1000 时被拒：「位于可执行映像（代码段）」；堆上 100→4321 不受影响 |
+| 命令行可注入任意 JS | `sem write gold "1); evil(("` → 拒绝；投毒适配包 Read 路径也拦（marker 检查 `__PWNED__` 未设置） |
+| PID 复用窗口可写错进程 | 写句柄上二次 `GetProcessTimes` 校验 |
+| 日志写失败谎报写入结果 | 两处日志降级吞掉；`Enable` 那处原先会触发全量回滚 |
+| 反作弊注册表误报 | 改查 SCM 服务运行态（`QueryServiceStatus`）+ Start 值 |
+| AuditLog 锁失效 | 实例级锁改 `static`（MemoryBackend 每次 new 实例） |
+| 数据目录劫持 | 包解压在工程内时 `profiles` 命令列出仓库的 gttest；修复后显示「还没有任何 profile」 |
+| dry-run 显示旧值 | 修后输出 `100 → 7777`（目标值），读回仍 100（未写入） |
+| GUI 启动冻结 30s | `await Task.Run(() => GameLauncher.Launch(...))` |
+| 刷新按钮永远禁用 | 拆出独立 `_refreshBtn`，`Kind = Secondary` |
+| 持久勾选瞬间清零护盾 | `ValueCard.cs:166` `if (_busy || !_isOn) return;` |
+| ToggleSwitch 无焦点框 | 补绘制；且修了 `inflate(track)` 越界导致底部被裁 |
+
+### 未验证（诚实缺口）
+
+- **真实 Unity / UE 游戏**：`memory_aob` 只用自建测试靶验证过，无商业游戏样本
+- **Tab 遍历顺序**：需人工按一次确认（注入按键会抢使用者焦点）
+- **深色系统主题**、**125%/150% DPI**：当前仅 96 DPI 浅色验证
+- **真实反作弊环境**：只读切换的代码路径存在，未在装反作弊的机器上跑过
+- **自动更新链路**：未实现（无 `update.json`、无更新器）
 
 ### 业务回归实测记录（2026-10-21）
 
