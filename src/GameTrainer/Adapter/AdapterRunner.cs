@@ -207,6 +207,20 @@ internal static class AdapterRunner
     /// <summary>连接一次，批量读取多个语义。</summary>
     public static List<ReadResult> Read(GameAdapter adapter, IEnumerable<string> semantics)
     {
+        // 全部为 memory_aob 时不需要 CDP：游戏可能根本没开调试端口，不能因此失败
+        if (!semantics.Any(s => adapter.FindBinding(s)?.Kind != "memory_aob"))
+            return ReadOn(null, adapter, semantics);
+
+        using var cdp = CdpClient.Connect(adapter.Connection.DebugPort, adapter.Connection.TitleFilter);
+        return ReadOn(cdp, adapter, semantics);
+    }
+
+    /// <summary>
+    /// 在给定连接上批量读取；cdp 为 null 时只处理 memory_aob 绑定。
+    /// PersistentWatcher 传入自己复用的连接；不接管传入连接的生命周期。
+    /// </summary>
+    public static List<ReadResult> ReadOn(CdpClient cdp, GameAdapter adapter, IEnumerable<string> semantics)
+    {
         var results = new List<ReadResult>();
         var wanted = semantics.ToList();
 
@@ -231,10 +245,11 @@ internal static class AdapterRunner
             return results;
         }
 
-        using var cdp = CdpClient.Connect(adapter.Connection.DebugPort, adapter.Connection.TitleFilter);
         var rt = adapter.EngineOptions.RuntimePath;
 
-        foreach (string sem in semantics)
+        // 遍历 wanted 而非原始 semantics：memory_aob 已在上方读过一遍，
+        // 遍历原集合会让 memory 语义在结果里出现两次
+        foreach (string sem in wanted)
         {
             var b = adapter.FindBinding(sem);
             if (b == null)
@@ -305,6 +320,23 @@ internal static class AdapterRunner
     /// <summary>按语义写值。dryRun 时只读前值不写。</summary>
     public static WriteResult Write(GameAdapter adapter, string semantic, string rawValue, bool dryRun)
     {
+        // 预检只为决定要不要建 CDP 连接（游戏没开端口时保持"绑定缺失/超区间"等准确错误），
+        // 权限与合法性判定以 WriteOn 内部为准
+        var b = adapter.FindBinding(semantic);
+        bool needsCdp = b != null && b.Kind != "memory_aob"
+                        && adapter.Mode != "readonly" && adapter.Engine == "construct3";
+        if (!needsCdp) return WriteOn(null, adapter, semantic, rawValue, dryRun);
+
+        using var cdp = CdpClient.Connect(adapter.Connection.DebugPort, adapter.Connection.TitleFilter);
+        return WriteOn(cdp, adapter, semantic, rawValue, dryRun);
+    }
+
+    /// <summary>
+    /// 在给定连接上写值；cdp 为 null 时仅处理不需要 CDP 的分支（memory_aob / 校验拒绝）。
+    /// PersistentWatcher 传入自己复用的连接。
+    /// </summary>
+    public static WriteResult WriteOn(CdpClient cdp, GameAdapter adapter, string semantic, string rawValue, bool dryRun)
+    {
         var b = adapter.FindBinding(semantic);
         if (b == null) return new WriteResult(semantic, false, null, null, false, "适配包没有该语义的绑定");
 
@@ -328,7 +360,9 @@ internal static class AdapterRunner
 
         try
         {
-            using var cdp = CdpClient.Connect(adapter.Connection.DebugPort, adapter.Connection.TitleFilter);
+            if (cdp == null)
+                return new WriteResult(semantic, false, null, null, b.Realtime,
+                    "内部错误：该写入需要 CDP 连接但未提供（预检与执行判定不一致，请报告）。");
             var rt = adapter.EngineOptions.RuntimePath;
 
             // RuntimePath 是**可执行的属性链表达式**（如 self.c3_runtimeInterface._localRuntime），
@@ -450,8 +484,11 @@ internal static class AdapterRunner
     const idx = names.indexOf({{JsonSerializer.Serialize(var)}});
     if (idx < 0) return JSON.stringify({ error: '变量 ' + {{JsonSerializer.Serialize(var)}} + ' 不存在' });
     const before = inst.GetInstanceVariableValue(idx);
-    if (!{{(dryRun ? "true" : "false")}}) inst.SetInstanceVariableValue(idx, {{jsVal}});
-    const after = inst.GetInstanceVariableValue(idx);
+    const DRY = {{(dryRun ? "true" : "false")}};
+    // dry-run 不落写入，after 直接取目标值求值——若读回旧值会输出 "5 → 5" 误导使用者
+    const after = DRY
+      ? ({{jsVal}})
+      : (inst.SetInstanceVariableValue(idx, {{jsVal}}), inst.GetInstanceVariableValue(idx));
     return JSON.stringify({ before, after });
   } catch (e) { return JSON.stringify({ error: String(e && e.message || e) }); }
 })()
@@ -492,15 +529,20 @@ internal static class AdapterRunner
       tx.onerror = () => rej(tx.error);
     });
     const before = await read();
-    if (!{{(dryRun ? "true" : "false")}}) {
+    const DRY = {{(dryRun ? "true" : "false")}};
+    // dry-run 不落写入，after 取目标值——读回旧值会输出 "5 → 5" 误导使用者
+    let after;
+    if (DRY) {
+      after = ({{jsVal}});
+    } else {
       await new Promise((res, rej) => {
         const tx = d.transaction({{JsonSerializer.Serialize(store)}}, 'readwrite');
         tx.objectStore({{JsonSerializer.Serialize(store)}}).put({{jsVal}}, {{JsonSerializer.Serialize(key)}});
         tx.oncomplete = () => res();
         tx.onerror = () => rej(tx.error);
       });
+      after = await read();
     }
-    const after = await read();
     d.close();
     return JSON.stringify({ before, after });
   } catch (e) { return JSON.stringify({ error: String(e && e.message || e) }); }

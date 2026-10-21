@@ -40,7 +40,7 @@ internal sealed class GuiForm : Form
     private readonly Badge _attachBadge = new();
     private readonly Badge _antiCheatBadge = new();
     private readonly FlatButton _attachBtn = new();
-    private readonly FlatButton _revertAllBtn = new();
+    private readonly FlatButton _refreshBtn = new();
     private readonly FlatButton _settingsBtn = new();
 
     // 侧栏
@@ -231,20 +231,24 @@ internal sealed class GuiForm : Form
             Anchor = AnchorStyles.Right
         };
 
-        // 适配包模式：不需要「附加」，改为「启动游戏 / 刷新数值」\r\n        _attachBtn.Text = "启动游戏";
+        // 适配包模式：不需要「附加」，改为「启动游戏 / 刷新数值」
+        _attachBtn.Text = "启动游戏";
         _attachBtn.AccessibleName = _attachBtn.Text;
         _attachBtn.Kind = ButtonKind.Primary;
         _attachBtn.Width = 116;
         _attachBtn.Margin = new Padding(0, 0, Tokens.S2, 0);
-        _attachBtn.Click += (_, _) => DoLaunchOrRefresh();
+        _attachBtn.Click += (_, _) => _ = LaunchOrRefreshAsync();
 
-        _revertAllBtn.Text = "刷新数值";
-        _revertAllBtn.AccessibleName = _revertAllBtn.Text;
-        _revertAllBtn.Kind = ButtonKind.Danger;
-        _revertAllBtn.Width = 104;
-        _revertAllBtn.Margin = new Padding(0, 0, Tokens.S2, 0);
-        _revertAllBtn.Enabled = false;
-        _revertAllBtn.Click += (_, _) => { if (_adapter != null) _ = RefreshValuesAsync(); else DoRevertAll(); };
+        // 次要样式而非危险红：红色保留给破坏性操作，「刷新」是安全操作。
+        // 选中适配包后才启用——之前它继承旧「全部回滚」按钮的启用逻辑，
+        // 在适配包（推荐路径）下永远禁用，用户无法手动刷新。
+        _refreshBtn.Text = "刷新数值";
+        _refreshBtn.AccessibleName = _refreshBtn.Text;
+        _refreshBtn.Kind = ButtonKind.Secondary;
+        _refreshBtn.Width = 104;
+        _refreshBtn.Margin = new Padding(0, 0, Tokens.S2, 0);
+        _refreshBtn.Enabled = false;
+        _refreshBtn.Click += (_, _) => { if (_adapter != null) _ = RefreshValuesAsync(); };
 
         _settingsBtn.Text = "设置";
         _settingsBtn.AccessibleName = _settingsBtn.Text;
@@ -253,7 +257,7 @@ internal sealed class GuiForm : Form
         _settingsBtn.Click += (_, _) => OpenSettings();
 
         actions.Controls.Add(_attachBtn);
-        actions.Controls.Add(_revertAllBtn);
+        actions.Controls.Add(_refreshBtn);
         actions.Controls.Add(_settingsBtn);
 
         layout.Controls.Add(brand, 0, 0);
@@ -417,54 +421,74 @@ internal sealed class GuiForm : Form
     /// <summary>
     /// 按适配包更新状态栏：连接状态、端口、可改数值数。
     /// 让使用者一眼看出「现在能不能操作」。
+    /// cdpReady 已知时（如刚启动成功）直接传入，跳过一次 0.8s 的端口探测。
     /// </summary>
-    private void UpdateStatusForAdapter(GameAdapter a)
+    private void UpdateStatusForAdapter(GameAdapter a, bool? cdpReady = null)
     {
         _statusAttach.Text = $"{a.Name} · {a.Engine}";
 
-        int port = a.Connection.DebugPort;
-        bool ok = GameLauncher.IsCdpReady(port, out _);
-        _statusAntiCheat.Text = ok ? $"调试端口：已连接 ({port})" : $"调试端口：未连接 ({port})";
+        bool ok = cdpReady ?? GameLauncher.IsCdpReady(a.Connection.DebugPort, out _);
+        _statusAntiCheat.Text = ok ? $"调试端口：已连接 ({a.Connection.DebugPort})" : $"调试端口：未连接 ({a.Connection.DebugPort})";
         _statusAntiCheat.ForeColor = ok ? Tokens.Success : Tokens.Warning;
 
         _statusStartup.Text = $"{a.Bindings.Count} 个数值 · {a.Mode}";
         _statusStartup.ForeColor = Tokens.TextSecondary;
     }
 
+    private bool _launching;
+
     /// <summary>
     /// 顶栏「启动游戏」：适配包模式下先确保游戏带调试端口运行，再刷新数值。
     /// 已连接时直接刷新，不重复启动。
+    /// 整体走后台线程：Launch 内部是秒级轮询等待（Thread.Sleep + HTTP 探测，
+    /// 最长 launchTimeoutSec），在 UI 线程同步调用会让窗口冻结「未响应」直到超时。
     /// </summary>
-    private void DoLaunchOrRefresh()
+    private async Task LaunchOrRefreshAsync()
     {
         if (_adapter == null)
         {
             Log("请先在左侧选择一个游戏适配包。");
             return;
         }
+        if (_launching) { Log("启动/刷新进行中，请稍候…"); return; }
 
-        int port = _adapter.Connection.DebugPort;
-        if (GameLauncher.IsCdpReady(port, out _))
+        var adapter = _adapter;
+        int port = adapter.Connection.DebugPort;
+        bool ready = await Task.Run(() => GameLauncher.IsCdpReady(port, out _));
+
+        if (ready)
         {
             Log("调试端口已就绪，直接刷新数值。");
-            _ = RefreshValuesAsync();
+            await RefreshValuesAsync();
             return;
         }
 
-        Log($"正在启动 {_adapter.Name}…");
-        var r = GameLauncher.Launch(_adapter, progress: line => Log("  " + line.Trim()));
-        if (r.Ok && r.CdpReady)
+        _launching = true;
+        _attachBtn.Enabled = false;
+        _refreshBtn.Enabled = false;
+        try
         {
-            _attachBadge.SetStyle(Tokens.SuccessSubtle, Tokens.Success, "已连接");
-            _antiCheatBadge.SetStyle(Tokens.SuccessSubtle, Tokens.Success, "调试端口就绪");
-            Log("启动成功，正在读取数值…");
-            UpdateStatusForAdapter(_adapter);
-            _ = RefreshValuesAsync();
+            Log($"正在启动 {adapter.Name}…");
+            var r = await Task.Run(() => GameLauncher.Launch(adapter, progress: line => Log("  " + line.Trim())));
+            if (r.Ok && r.CdpReady)
+            {
+                _attachBadge.SetStyle(Tokens.SuccessSubtle, Tokens.Success, "已连接");
+                _antiCheatBadge.SetStyle(Tokens.SuccessSubtle, Tokens.Success, "调试端口就绪");
+                Log("启动成功，正在读取数值…");
+                UpdateStatusForAdapter(adapter, cdpReady: true);
+                _refreshBtn.Enabled = true;
+                await RefreshValuesAsync();
+            }
+            else
+            {
+                _attachBadge.SetStyle(Tokens.DangerSubtle, Tokens.Danger, "启动失败");
+                Log("[失败] " + r.Message.Replace("\n", " "));
+            }
         }
-        else
+        finally
         {
-            _attachBadge.SetStyle(Tokens.DangerSubtle, Tokens.Danger, "启动失败");
-            Log("[失败] " + r.Message.Replace("\n", " "));
+            _launching = false;
+            _attachBtn.Enabled = true;
         }
     }
 
@@ -608,7 +632,7 @@ internal sealed class GuiForm : Form
         ConfigureStatusLabel(_statusAttach, "未选择适配包", Tokens.TextSecondary);
         ConfigureStatusLabel(_statusAntiCheat, "调试端口：未知", Tokens.TextSecondary);
         ConfigureStatusLabel(_statusStartup, "开机自启：未启用", Tokens.TextSecondary);
-        ConfigureStatusLabel(_hotkeyHint, "Ctrl+Alt+F1 启用 / F2 停用", Tokens.TextSecondary);
+        ConfigureStatusLabel(_hotkeyHint, "Ctrl+Alt+F1 启用 / Ctrl+Alt+F2 停用", Tokens.TextSecondary);
 
         layout.Controls.Add(_statusAttach, 0, 0);
         layout.Controls.Add(_statusAntiCheat, 1, 0);
@@ -777,11 +801,12 @@ internal sealed class GuiForm : Form
         switch (_profileList.SelectedTag)
         {
             case GameAdapter a:
-                StopAllWatchers();
+                StopAllWatchers("切换游戏");
                 _adapter = a;
                 _profile = null;
                 BuildValueCards();
                 UpdateStatusForAdapter(a);
+                _refreshBtn.Enabled = true;
                 Log($"已选择适配包：{a.Id}（{a.Bindings.Count} 个数值）");
                 _ = RefreshValuesAsync();
                 break;
@@ -852,9 +877,9 @@ internal sealed class GuiForm : Form
                 Dock = DockStyle.Fill
             };
 
-            card.ApplyRequested += (sem, val) => ApplyValue(sem, val.ToString());
-            card.FillRequested += sem => FillValue(sem);
-            card.ToggleRequested += (sem, on, persist) => ToggleValue(sem, on, persist);
+            card.ApplyRequested += (sem, val) => _ = ApplyValueAsync(sem, val.ToString());
+            card.FillRequested += sem => _ = FillValueAsync(sem);
+            card.ToggleRequested += (sem, on, persist) => _ = ToggleValueAsync(sem, on, persist);
 
             _cards[b.Semantic] = card;
         }
@@ -989,15 +1014,21 @@ internal sealed class GuiForm : Form
         }
     }
 
-    private void ApplyValue(string semantic, string raw)
+    /// <summary>同一语义的写入防重入：CDP 写超时可达 30 秒，连点不能并发写两次。</summary>
+    private readonly HashSet<string> _writing = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 写入单个语义。必须走后台线程：CDP 是同步阻塞 IO（超时 30 秒），
+    /// 在 UI 线程执行会让窗口冻结——游戏卡顿时点任何卡片都假死。
+    /// </summary>
+    private async Task ApplyValueAsync(string semantic, string raw)
     {
         if (_adapter == null) return;
+        if (!_writing.Add(semantic)) { Log($"{Semantics.Display(semantic)} 正在写入，请稍候…"); return; }
         var adapter = _adapter;
-        var b = adapter.FindBinding(semantic);
-
         try
         {
-            var r = AdapterRunner.Write(adapter, semantic, raw, dryRun: false);
+            var r = await Task.Run(() => AdapterRunner.Write(adapter, semantic, raw, dryRun: false));
             if (r.Ok)
             {
                 Log($"{Semantics.Display(semantic)}: {r.Before} → {r.After}" + (r.Realtime ? "  [实时]" : "  [需重载]"));
@@ -1015,10 +1046,14 @@ internal sealed class GuiForm : Form
         {
             Log("[错误] " + ex.Message);
         }
+        finally
+        {
+            _writing.Remove(semantic);
+        }
     }
 
-    /// <summary>「回满」：取 FillFrom 指向的语义当前值作为目标。</summary>
-    private void FillValue(string semantic)
+    /// <summary>「回满」：取 FillFrom 指向的语义当前值作为目标。读取走后台线程。</summary>
+    private async Task FillValueAsync(string semantic)
     {
         if (_adapter == null) return;
         var b = _adapter.FindBinding(semantic);
@@ -1026,7 +1061,8 @@ internal sealed class GuiForm : Form
 
         if (!string.IsNullOrWhiteSpace(b?.FillFrom))
         {
-            var src = AdapterRunner.Read(_adapter, new[] { b.FillFrom });
+            var adapter = _adapter;
+            var src = await Task.Run(() => AdapterRunner.Read(adapter, new[] { b.FillFrom }));
             var hit = src.FirstOrDefault(x => x.Ok);
             if (hit != null) target = hit.Value;
         }
@@ -1041,15 +1077,15 @@ internal sealed class GuiForm : Form
             return;
         }
 
-        ApplyValue(semantic, target);
+        await ApplyValueAsync(semantic, target);
     }
 
-    private void ToggleValue(string semantic, bool on, bool persist)
+    private async Task ToggleValueAsync(string semantic, bool on, bool persist)
     {
         if (_adapter == null) return;
         var b = _adapter.FindBinding(semantic);
         double target = on ? (b?.OnValue ?? 1) : 0;
-        ApplyValue(semantic, target.ToString("0"));
+        await ApplyValueAsync(semantic, target.ToString("0"));
 
         // 持久监控：只有用户显式勾选且开关为开时才启动
         StopWatcher(semantic);
@@ -1058,6 +1094,18 @@ internal sealed class GuiForm : Form
         {
             var w = new PersistentWatcher(_adapter, semantic, target);
             w.Notified += msg => Log($"[持久] {Semantics.Display(semantic)}：{msg}");
+            // 监控静默死亡是挂机场景最疼的失败：日志区收起时用户不知道盾没了。
+            // 停止走系统托盘气泡，绕开日志可见性。
+            w.Stopped += reason =>
+            {
+                try
+                {
+                    BeginInvoke(() => _tray.ShowBalloonTip(3000, "持久监控停止",
+                        $"{Semantics.Display(semantic)}：{reason}", ToolTipIcon.Warning));
+                }
+                catch (ObjectDisposedException) { }
+                catch (InvalidOperationException) { }
+            };
             w.Start();
             _watchers[semantic] = w;
             Log($"[持久] {Semantics.Display(semantic)} 监控已启动（每 1 秒检查，退出对局自动停止）");
@@ -1079,14 +1127,16 @@ internal sealed class GuiForm : Form
         }
     }
 
-    /// <summary>停止全部持久监控（退出程序或切换适配包时调用）。</summary>
-    private void StopAllWatchers()
+    /// <summary>停止全部持久监控（切换游戏/退出程序）。停止原因写进日志，不让监控静默消失。</summary>
+    private void StopAllWatchers(string reason)
     {
         foreach (var w in _watchers.Values)
         {
             w.Stop();
             w.Dispose();
         }
+        if (_watchers.Count > 0)
+            Log($"[持久] 已停止 {_watchers.Count} 个持久监控（{reason}）");
         _watchers.Clear();
     }
 
@@ -1189,7 +1239,8 @@ internal sealed class GuiForm : Form
             foreach (PatchRow r in _rows.Values)
                 r.State = _engine.ReadOnlyForced ? PatchRow.StateKind.Blocked : PatchRow.StateKind.Ready;
 
-            _revertAllBtn.Enabled = true;
+            // 注意：旧 profile 附加模式当前没有 UI 入口（DoAttach 无调用点），
+            // 这里也不再启用「刷新数值」——它只对适配包模式有意义。待另立议题处理。
             _patchEmpty.Visible = false;
         }
         catch (Exception ex)
@@ -1341,8 +1392,15 @@ internal sealed class GuiForm : Form
 
     private void Log(string msg)
     {
-        if (_logBox.InvokeRequired) { _logBox.BeginInvoke(() => Log(msg)); return; }
-        _logBox.Append($"[{DateTime.Now:HH:mm:ss}] {msg}");
+        // 关窗竞态兜底：watcher/写入的回调可能在 handle 销毁后仍在飞行，
+        // 此时 BeginInvoke 或 Append 会抛异常炸掉后台线程（进程崩溃）。静默放弃日志。
+        try
+        {
+            if (_logBox.InvokeRequired) { _logBox.BeginInvoke(() => Log(msg)); return; }
+            _logBox.Append($"[{DateTime.Now:HH:mm:ss}] {msg}");
+        }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
     }
 
     /// <summary>首次关闭提示"已转到后台"，之后静默。</summary>
@@ -1386,7 +1444,7 @@ internal sealed class GuiForm : Form
 
     private void PerformExit()
     {
-        StopAllWatchers();
+        StopAllWatchers("退出程序");
         if (_engine != null)
         {
             _engine.StopAllFreezes();

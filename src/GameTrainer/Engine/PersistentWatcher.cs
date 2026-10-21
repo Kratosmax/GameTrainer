@@ -25,6 +25,27 @@ internal sealed class PersistentWatcher : IDisposable
     /// <summary>每次补写或状态变化时触发（供 UI 记日志）。</summary>
     public event Action<string> Notified;
 
+    /// <summary>监控停止（无论原因）时触发，参数为停止原因。供 UI 弹系统级通知。</summary>
+    public event Action<string> Stopped;
+
+    /// <summary>复用的 CDP 连接。断开后 DropCdp 置空，下一轮重建。</summary>
+    private CdpClient _cdp;
+
+    /// <summary>
+    /// 取复用连接，懒建立。原来每轮循环新建+销毁连接（IsInGame 与 Read 各一次，
+    /// 每秒 2 次握手、挂机 8 小时约 5.8 万次），拖慢游戏且积累 TIME_WAIT。
+    /// </summary>
+    private CdpClient GetCdp()
+        => _cdp ??= CdpClient.Connect(_adapter.Connection.DebugPort, _adapter.Connection.TitleFilter);
+
+    /// <summary>连接级异常后丢弃复用连接，下一轮重建（秒级循环，重建代价可忽略）。</summary>
+    private void DropCdp()
+    {
+        var c = _cdp;
+        _cdp = null;
+        try { c?.Dispose(); } catch { }
+    }
+
     /// <summary>监控是否仍在运行。</summary>
     public bool IsRunning => _loop is { IsCompleted: false };
 
@@ -49,6 +70,7 @@ internal sealed class PersistentWatcher : IDisposable
     {
         var ct = _cts.Token;
         int consecutiveFailures = 0;
+        int writeFailures = 0;
 
         while (!ct.IsCancellationRequested)
         {
@@ -67,13 +89,14 @@ internal sealed class PersistentWatcher : IDisposable
                     {
                         StopReason = "已退出对局";
                         Notified?.Invoke("检测到已退出对局，持久监控自动停止。");
+                        Stopped?.Invoke(StopReason);
                         return;
                     }
                     continue;
                 }
 
-                // 读当前值
-                var reads = AdapterRunner.Read(_adapter, new[] { _semantic });
+                // 读当前值（复用连接；连接级异常由下方 catch 丢弃重建）
+                var reads = AdapterRunner.ReadOn(GetCdp(), _adapter, new[] { _semantic });
                 var r = reads.FirstOrDefault();
                 if (r == null || !r.Ok)
                 {
@@ -82,6 +105,7 @@ internal sealed class PersistentWatcher : IDisposable
                     {
                         StopReason = "连续 10 次读取失败";
                         Notified?.Invoke("持久监控停止：连续读取失败（游戏可能已关闭）。");
+                        Stopped?.Invoke(StopReason);
                         return;
                     }
                     continue;
@@ -91,18 +115,37 @@ internal sealed class PersistentWatcher : IDisposable
                 // 值丢失就补回
                 if (!double.TryParse(r.Value, out double cur) || Math.Abs(cur - _target) > 1e-9)
                 {
-                    var w = AdapterRunner.Write(_adapter, _semantic, _target.ToString("0.##"), dryRun: false);
+                    var w = AdapterRunner.WriteOn(GetCdp(), _adapter, _semantic, _target.ToString("0.##"), dryRun: false);
                     if (w.Ok)
+                    {
+                        writeFailures = 0;
                         Notified?.Invoke($"持久补写：{r.Value} → {w.After}");
+                    }
+                    else
+                    {
+                        // 补写失败原来完全静默：监控"健康"空转，但值永远补不回去
+                        if (++writeFailures >= 10)
+                        {
+                            StopReason = "连续 10 次补写失败";
+                            Notified?.Invoke("持久监控停止：连续补写失败（" + w.Error + "）。");
+                            Stopped?.Invoke(StopReason);
+                            return;
+                        }
+                        if (writeFailures == 1)
+                            Notified?.Invoke("补写失败，将持续重试：" + w.Error);
+                    }
                 }
             }
             catch (OperationCanceledException) { return; }
             catch (Exception ex)
             {
+                DropCdp();   // 异常最可能是连接级故障，丢弃复用连接，下一轮重建
+
                 if (++consecutiveFailures >= 10)
                 {
                     StopReason = "连续异常：" + ex.Message;
                     Notified?.Invoke("持久监控停止：" + ex.Message);
+                    Stopped?.Invoke(StopReason);
                     return;
                 }
             }
@@ -139,7 +182,8 @@ internal sealed class PersistentWatcher : IDisposable
   } catch (e) { return JSON.stringify({ layout: null, error: String(e) }); }
 })()
 """;
-                using var cdp = CdpClient.Connect(_adapter.Connection.DebugPort, _adapter.Connection.TitleFilter);
+                // 不用 using：连接是复用的，生命周期归 DropCdp/Dispose 管
+                var cdp = GetCdp();
                 string raw = cdp.Evaluate(script, timeoutMs: 5000);
                 using var doc = System.Text.Json.JsonDocument.Parse(raw);
                 if (doc.RootElement.TryGetProperty("layout", out var l) &&
@@ -152,6 +196,7 @@ internal sealed class PersistentWatcher : IDisposable
             }
             catch
             {
+                DropCdp();   // 连接可能已死，丢弃后下一轮重建
                 return false;
             }
         }
@@ -159,7 +204,7 @@ internal sealed class PersistentWatcher : IDisposable
         // 退化：目标对象还有实例就认为在局内
         var b = _adapter.FindBinding(_semantic);
         if (b == null || string.IsNullOrWhiteSpace(b.ObjectName)) return true;
-        var reads = AdapterRunner.Read(_adapter, new[] { _semantic });
+        var reads = AdapterRunner.ReadOn(GetCdp(), _adapter, new[] { _semantic });
         var r = reads.FirstOrDefault();
         return r is { Ok: true };
     }
@@ -176,6 +221,7 @@ internal sealed class PersistentWatcher : IDisposable
         // 提前释放会让它后续访问已 disposed 的对象。
         // 参照 FreezeTask.Stop 的做法。
         try { _loop?.Wait(2000); } catch { }
+        DropCdp();
         try { _cts.Dispose(); } catch { }
     }
 }

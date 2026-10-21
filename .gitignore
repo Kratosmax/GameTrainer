@@ -13,3 +13,6 @@ dist/
 
 # skill 本体在 ~/.agents/skills/game-trainer，不归本工程
 SKILL.md
+
+# agent 协作总线（运行期状态，不入库）
+bus/

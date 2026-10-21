@@ -462,8 +462,8 @@ internal static class Program
   const idx = names.indexOf(VAR);
   if (idx < 0) return '对象 ' + OBJ + ' 没有变量 ' + VAR + '\n可用: ' + names.join(', ');
   const before = inst.GetInstanceVariableValue(idx);
-  if (!DRY) inst.SetInstanceVariableValue(idx, VAL);
-  const after = inst.GetInstanceVariableValue(idx);
+  // dry-run 不落写入，after 取计划值——读回旧值会输出 before==after 误导使用者
+  const after = DRY ? VAL : (inst.SetInstanceVariableValue(idx, VAL), inst.GetInstanceVariableValue(idx));
   return JSON.stringify({ object: OBJ, variable: VAR, index: idx, dryRun: DRY, before, planned: VAL, after }, null, 2);
 })()
 """;
@@ -1073,8 +1073,8 @@ internal static class Program
   const idx = names.indexOf(VAR);
   if (idx < 0) return '对象 ' + OBJ + ' 没有变量 ' + VAR + '\n可用: ' + names.join(', ');
   const before = inst.GetInstanceVariableValue(idx);
-  if (!DRY) inst.SetInstanceVariableValue(idx, VAL);
-  const after = inst.GetInstanceVariableValue(idx);
+  // dry-run 不落写入，after 取计划值——读回旧值会输出 before==after 误导使用者
+  const after = DRY ? VAL : (inst.SetInstanceVariableValue(idx, VAL), inst.GetInstanceVariableValue(idx));
   return JSON.stringify({ object: OBJ, variable: VAR, index: idx, dryRun: DRY, before, planned: VAL, after }, null, 2);
 })()
 """;

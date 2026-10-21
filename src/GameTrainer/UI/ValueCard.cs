@@ -160,7 +160,10 @@ internal sealed class ValueCard : Panel
                     _persist.Margin = new Padding(Tokens.S2, 0, 0, 0);
                     _persist.CheckedChanged += (_, _) =>
                     {
-                        if (_busy) return;
+                        // 开关未开时勾选/取消「持久」只记录意图，不触发写入——
+                        // 否则会走 ToggleValue(semantic, false, persist) 把游戏值立即写成 0，
+                        // 用户「先勾持久再打开关」的常见顺序会瞬间清空护盾
+                        if (_busy || !_isOn) return;
                         ToggleRequested?.Invoke(Semantic, _isOn, _persist.Checked);
                         UpdateHint();
                     };
