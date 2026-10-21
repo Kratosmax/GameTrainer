@@ -647,3 +647,97 @@ push tag v1.1.0
 - 双击修改项打开设置弹窗（需要真实双击）
 - 首页点卡片进入游戏页（需要真实点击）
 - 适配包下载端到端（需要 index.json 已在远端，本次推送后可用）
+
+### 发布完成（2026-10-22 03:30）
+
+**Release v1.1.0 已上线**：https://github.com/Kratosmax/GameTrainer/releases/tag/v1.1.0
+
+8 个资产全部齐全：
+
+| 资产 | 大小 |
+|---|---|
+| GameTrainer-1.1.0-Full-Setup.exe | 51,189,532 |
+| GameTrainer-1.1.0-Full.zip | 72,384,204 |
+| GameTrainer-1.1.0-Lite-Setup.exe | 2,312,545 |
+| GameTrainer-1.1.0-Lite.zip | 356,335 |
+| update.json / update-lite.json / update-full.json | 875 / 875 / 912 |
+| SHA256SUMS.txt | 722 |
+
+发布链路（GitHub Actions 自动执行）：
+```
+push tag v1.1.0 → release.yml
+  → 校验 tag 与版本一致
+  → 从 secrets.GAMETRAINER_UPDATE_SIGNING_KEY 取私钥
+  → build/release.ps1 构建全部资产
+  → 校验齐全后 gh release create
+```
+
+### 实测验证记录
+
+**更新链路**（真实客户端）：
+```
+temp/preview/verify2/GameTrainer.exe update check
+  → 当前版本 1.1.0  通道 lite
+  → 清单地址 https://github.com/.../releases/latest/download/update-lite.json
+  → 已是最新版本（当前 1.1.0）
+```
+签名校验通过，清单结构正确。
+
+**适配包下载链路**：
+```
+raw.githubusercontent.com/.../adapters/index.json
+  直连 → 超时（国内网络常态）
+  经 http://127.0.0.1:10808 → HTTP 200，26445 字节，2 个适配包
+```
+本机 `ProxyEnable = 0` 但 10808 在监听——正是 `UpdateClient.ResolveProxy()` 第三步
+「探测常见本地端口」要处理的场景。
+
+**UI 渲染**（UiShot 自动截图 + 控件树）：
+```
+temp/ui-shot-final/main-default.png     首页默认态
+temp/ui-shot-final/main-wide.png        宽窗口
+temp/ui-shot-final/main-min.png         最小尺寸
+temp/ui-shot-final/main-empty.png       空状态
+temp/ui-shot-final/settings-*.png       设置页各区块
+focus[03] 设置  visible=True  enabled=True
+focus[04] 卸载  visible=True  enabled=True
+```
+
+### 九项问题最终状态
+
+| 编号 | 问题 | 状态 |
+|---|---|---|
+| 1 | 应用按钮丢失 | ✅ 已修（表格列约束） |
+| 2 | 拖动卡顿 | ✅ 已修（防抖 + 不重建） |
+| 3 | 日志折叠差 | ✅ 已改底部抽屉 |
+| 4 | 切换游戏加载失败 | ✅ 已修（清缓存 + 自动重试） |
+| 5 | 双状态矛盾 | ✅ 已修（删调试端口行） |
+| 6 | 适配包下载/卸载 | ✅ 已实现并验证链路 |
+| 7 | 启动器式首页 | ✅ 已实现并截图验证 |
+| 8 | 更新代理/公告 | ✅ 代理设置 + 红点公告 |
+| 9 | 快捷键自定义 | ✅ 每项独立配置 |
+
+### 本轮全部提交
+
+```
+80efd18 feat: 更新红点非侵入提示 + 读取失败自动重试
+67e9dd5 docs: 1.1.0 发布说明
+b27b1c2 docs: 脱敏收尾
+8006efe chore(release): 版本升到 1.1.0
+b6e15db feat: 启动器式首页 + 九项问题修复
+```
+
+### 本地预览包
+
+```
+F:\git\temp\game-trainer\temp\preview\GameTrainer-1.1.0-Lite-preview.zip
+349,053 字节
+SHA256=FD194B566B046C4503CDF728376AE1660A7621F726B4C40176CDD43CA47AD618
+```
+
+### 剩余未验证（诚实缺口）
+
+- **拖动窗口的实际流畅度**：需要真实鼠标拖动，脚本无法模拟
+- **双击修改项打开设置弹窗**：需要真实双击事件
+- **首页点卡片进入游戏页**：需要真实点击（页面切换代码路径已实现）
+- **高 DPI**：当前仅 96 DPI 环境
