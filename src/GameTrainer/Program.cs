@@ -152,6 +152,8 @@ internal static class Program
             case "probe": return CmdProbe(a);
             case "adapters": return CmdAdapters();
             case "sem": return CmdSemantic(a);
+            case "launch": return CmdLaunch(a);
+            case "status": return CmdStatus(a);
             case "jsobj": return CmdJsObj(a);
             case "jssetvar": return CmdJsSetVar(a);
             case "gui": return GuiForm.Run(_skillRoot);
@@ -436,6 +438,99 @@ internal static class Program
     }
 
     // ---------------- 适配包（Game Adapter Pack）----------------
+
+    /// <summary>
+    /// launch &lt;gameId&gt; [--no-wait]
+    /// 替使用者带上调试参数启动游戏，并等待 CDP 就绪。
+    /// 这是消除「每次要记调试端口」的方案 A，不改变游戏本身。
+    /// </summary>
+    private static int CmdLaunch(string[] a)
+    {
+        if (a.Length < 2)
+        {
+            Console.Error.WriteLine("用法: launch <gameId> [--no-wait]");
+            return 2;
+        }
+
+        string path = Path.Combine(_skillRoot, "adapters", a[1], "adapter.json");
+        if (!File.Exists(path))
+        {
+            Console.Error.WriteLine($"找不到适配包: {path}");
+            return 2;
+        }
+
+        GameAdapter adapter;
+        try { adapter = GameAdapter.Load(path); }
+        catch (Exception ex) { WriteError("[错误] " + ex.Message); return 1; }
+
+        if (adapter.Engine is "native_memory")
+        {
+            Console.Error.WriteLine("该适配包使用内存后端，不需要调试端口，直接启动游戏即可。");
+            return 2;
+        }
+
+        bool noWait = a.Contains("--no-wait");
+        Console.WriteLine($"启动 {adapter.Name}（端口 {adapter.Connection.DebugPort}）");
+
+        var r = GameLauncher.Launch(adapter, noWait, line => Console.WriteLine(line));
+        Console.WriteLine();
+        if (r.Ok)
+        {
+            Console.WriteLine("[成功] " + r.Message);
+            if (r.CdpReady)
+                Console.WriteLine($"下一步：sem {adapter.Id} read");
+            return 0;
+        }
+        Console.Error.WriteLine("[失败] " + r.Message);
+        return 1;
+    }
+
+    /// <summary>
+    /// status &lt;gameId&gt;
+    /// 检查当前状态：进程 / 调试端口 / 适配包绑定。
+    /// </summary>
+    private static int CmdStatus(string[] a)
+    {
+        if (a.Length < 2)
+        {
+            Console.Error.WriteLine("用法: status <gameId>");
+            return 2;
+        }
+
+        string path = Path.Combine(_skillRoot, "adapters", a[1], "adapter.json");
+        if (!File.Exists(path)) { Console.Error.WriteLine($"找不到适配包: {path}"); return 2; }
+
+        GameAdapter adapter;
+        try { adapter = GameAdapter.Load(path); }
+        catch (Exception ex) { WriteError("[错误] " + ex.Message); return 1; }
+
+        Console.WriteLine($"{adapter.Name}  引擎={adapter.Engine}  模式={adapter.Mode}");
+
+        // 进程
+        string procName = Path.GetFileNameWithoutExtension(adapter.Exe);
+        var procs = System.Diagnostics.Process.GetProcessesByName(procName);
+        if (procs.Length == 0)
+            Console.WriteLine("  进程     : 未运行");
+        else
+            Console.WriteLine($"  进程     : {procs.Length} 个（主进程 PID {procs.OrderByDescending(p => p.WorkingSet64).First().Id}）");
+
+        // 端口
+        bool cdp = GameLauncher.IsCdpReady(adapter.Connection.DebugPort, out string detail);
+        Console.WriteLine($"  调试端口 : {(cdp ? $"就绪（{adapter.Connection.DebugPort}）" : $"不可用（{adapter.Connection.DebugPort}）")}");
+
+        // 绑定
+        int realtime = adapter.Bindings.Count(b => b.Realtime);
+        Console.WriteLine($"  语义绑定 : {adapter.Bindings.Count} 个（实时 {realtime}，需重载 {adapter.Bindings.Count - realtime}）");
+
+        Console.WriteLine();
+        if (!cdp && procs.Length > 0)
+            Console.WriteLine($"建议：游戏未带调试端口启动。关掉它再执行 launch {adapter.Id}");
+        else if (!cdp)
+            Console.WriteLine($"建议：launch {adapter.Id}");
+        else
+            Console.WriteLine($"就绪，可以执行 sem {adapter.Id} read");
+        return 0;
+    }
 
     /// <summary>
     /// probe &lt;port&gt; [--save &lt;gameId&gt; &lt;name&gt; &lt;exe&gt;] [titleFilter]
@@ -1233,6 +1328,9 @@ js_runtime 后端（NW.js / Electron / CEF）:
   sem      <gameId> read [语义]         按语义读取（health/gold/energy/attack...）
   sem      <gameId> write <语义> <值>   按语义写入（带区间校验）
   sem      <gameId> write <语义> <值> --dry-run
+
+  launch   <gameId> [--no-wait]         替用户带调试参数启动游戏并等端口就绪
+  status   <gameId>                     检查进程 / 调试端口 / 绑定状态
 
   适配包放在 adapters/<gameId>/adapter.json，一个游戏一份。
   新游戏适配流程见 docs/GAME-ADAPTER-GUIDE.md。

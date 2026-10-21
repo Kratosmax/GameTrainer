@@ -134,8 +134,17 @@ internal sealed class ConnectionSpec
     /// <summary>页面标题过滤，多页面时选中游戏页。</summary>
     public string TitleFilter { get; set; }
 
+    /// <summary>
+    /// 游戏安装目录。用于 launch 命令定位 exe。
+    /// 留空时按 exe 所在目录、已运行进程路径、常见安装盘符依次探测。
+    /// </summary>
+    public string InstallDir { get; set; }
+
     /// <summary>启动时自动附加的额外参数。</summary>
     public List<string> LaunchArgs { get; set; } = new();
+
+    /// <summary>启动后等待 CDP 就绪的最长秒数。默认 30。</summary>
+    public int LaunchTimeoutSec { get; set; } = 30;
 }
 
 /// <summary>引擎特定配置。</summary>

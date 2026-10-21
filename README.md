@@ -178,7 +178,8 @@ game-trainer/
 │   │   │   ├── Semantics.cs      通用语义表与别名匹配
 │   │   │   ├── GameAdapter.cs    适配包模型与校验
 │   │   │   ├── ProbeEngine.cs    只读探测器（5 阶段）
-│   │   │   └── AdapterRunner.cs  按语义读写执行器
+│   │   │   ├── AdapterRunner.cs  按语义读写执行器
+│   │   │   └── GameLauncher.cs   带调试参数启动游戏（方案 A）
 │   │   ├── Js/CdpClient.cs     CDP 客户端（NW.js/Electron/CEF）
 │   │   ├── Core/               热键、单实例、自启、审计、反作弊、激活状态
 │   │   ├── Engine/             PatchEngine / SaveEngine / Scanner

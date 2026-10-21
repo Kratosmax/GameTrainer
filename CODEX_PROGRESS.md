@@ -122,6 +122,43 @@ temp/preview/verify-lite/GameTrainer.exe profiles
 注意：`build/package.ps1` 必须保持 **CRLF + UTF-8 BOM**。PowerShell 5.1 解析 LF 换行的中文脚本会报
 `Unexpected token '}'`，这不是语法错误。编辑该文件后要重新转 CRLF。
 
+## 启动与状态（方案 A：消除调试端口摩擦）
+
+对应 skill 第零节「问题 4」的方案 A。核心思想：**发现手段和运行依赖不该是同一个东西**，
+但至少先把"每次要记 --remote-debugging-port"这个摩擦消掉。
+
+```
+launch <gameId> [--no-wait]   读适配包 → 定位 exe → 带端口启动 → 等就绪
+status <gameId>               进程 / 端口 / 绑定 三项状态
+```
+
+适配包需要 `connection.installDir`（游戏安装目录）。未填时会按
+适配包同级目录 → 常见盘符 `\Games\` 下按名匹配依次探测。
+
+### 实测
+
+```
+GameTrainer.exe launch solcesto
+  → exe: E:\Games\Sol Cesto\SolCesto.exe
+  → 启动成功，CDP 端口 9222 已就绪
+  → 1.8 秒返回，exit 0
+```
+
+### 两个必须记住的实现约束
+
+1. **必须 `UseShellExecute = true`**。
+   最初用 `false` + 继承 stdout，结果：命令行不返回（像卡死），
+   而且杀掉父进程会连带杀掉游戏。游戏是长期运行的进程，生命周期不该绑在一次 CLI 调用上。
+2. **`UseShellExecute=true` 下不能用 `ArgumentList`**，含空格的参数要自己加引号
+   （见 `GameLauncher.QuoteArg`）。
+
+### 已知边界
+
+- **不自动杀进程**：已有同名进程时不替用户做决定，只提示并引导
+- **启动器吞参数**：部分游戏的 launcher 会二次转发并丢掉 `--remote-debugging-port`，
+  此时 `launch` 会报"进程仍在运行但端口未就绪"，需改用方案 C
+- **仍依赖 CDP**：方案 A 只是藏起参数，没有脱依赖。真正脱依赖要做方案 C（AOB 锚点固化）
+
 ## 适配包体系（Game Adapter Pack）
 
 ### 设计意图
