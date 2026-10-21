@@ -741,7 +741,6 @@ internal sealed class GuiForm : Form
     }
 
     private Panel _logPad;
-    private bool _stacked;
     private bool _logCollapsed;
 
     /// <summary>
