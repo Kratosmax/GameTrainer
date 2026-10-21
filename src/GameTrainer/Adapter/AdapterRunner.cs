@@ -341,22 +341,13 @@ internal static class AdapterRunner
 
             // 拼进 JS 的值必须是**可控形态**，否则命令行参数可直接注入页面脚本：
             //   sem <游戏> write health "1); evil(("
-            // 规则：string 类型走 JSON 序列化（自带引号与转义）；
-            //       其他类型必须能解析成有限数字才允许裸插入；
-            //       解析不了就转成 JSON 字符串（引号包裹，无法逃逸成代码）。
-            string jsVal;
-            if (b.ValueType == "string")
+            //
+            // 判定规则统一收敛到 JsLiteral（string → JSON 序列化；
+            // 非 string 必须是有限数字，否则拒绝）。这里不再内联一份，
+            // 否则两处规则会漂移——dfa55eb 建了 JsLiteral 却漏切这一处，
+            // 正是"只堵新路径、不回头统一旧路径"的老毛病。
+            if (!JsLiteral.TryPrepare(rawValue, b.ValueType, out string jsVal))
             {
-                jsVal = JsonSerializer.Serialize(rawValue);
-            }
-            else if (double.TryParse(rawValue, NumberStyles.Float, CultureInfo.InvariantCulture, out double num)
-                     && !double.IsNaN(num) && !double.IsInfinity(num))
-            {
-                jsVal = num.ToString("R", CultureInfo.InvariantCulture);
-            }
-            else
-            {
-                // 既不是 string 也不是合法数字：拒绝，不给注入留任何空间
                 return new WriteResult(semantic, false, null, null, b.Realtime,
                     $"值 \"{rawValue}\" 不是合法数字（该绑定 valueType={b.ValueType}）。");
             }

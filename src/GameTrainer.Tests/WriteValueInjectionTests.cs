@@ -15,17 +15,16 @@ namespace GameTrainer.Tests;
 /// </summary>
 public class WriteValueInjectionTests
 {
-    /// <summary>复刻 AdapterRunner 里修复后的判定逻辑。</summary>
+    /// <summary>
+    /// 调用**真实**判定方法，不再复刻逻辑。
+    ///
+    /// 原先这里是复刻版：如果生产代码改了规则，复刻版仍是旧的，测试照样绿——
+    /// 那测的是测试自己，不是产品。现在直接转调 JsLiteral.TryPrepare。
+    /// </summary>
     private static (bool Ok, string JsVal) Prepare(string rawValue, string valueType)
     {
-        if (valueType == "string")
-            return (true, System.Text.Json.JsonSerializer.Serialize(rawValue));
-
-        if (double.TryParse(rawValue, NumberStyles.Float, CultureInfo.InvariantCulture, out double num)
-            && !double.IsNaN(num) && !double.IsInfinity(num))
-            return (true, num.ToString("R", CultureInfo.InvariantCulture));
-
-        return (false, null);
+        bool ok = GameTrainer.JsLiteral.TryPrepare(rawValue, valueType, out string jsVal);
+        return (ok, jsVal);
     }
 
     [Theory]
