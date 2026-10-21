@@ -15,6 +15,169 @@ internal static class AdapterRunner
     public sealed record ReadResult(string Semantic, bool Ok, string Value, string Where, string Error);
     public sealed record WriteResult(string Semantic, bool Ok, string Before, string After, bool Realtime, string Error);
 
+    /// <summary>
+    /// 一次性读出全部绑定值（GUI 刷新用）。
+    ///
+    /// 与 Read 的区别：把所有 instance_var 合并成**一个** JS 脚本执行，
+    /// IndexedDB 部分再单独一次。11 个值从 11 次往返降到 2 次。
+    /// </summary>
+    public static Dictionary<string, ReadResult> ReadAll(GameAdapter adapter)
+    {
+        var map = new Dictionary<string, ReadResult>(StringComparer.OrdinalIgnoreCase);
+        if (adapter.Engine != "construct3")
+        {
+            foreach (var b in adapter.Bindings)
+                map[b.Semantic] = new ReadResult(b.Semantic, false, null, b.Describe(), $"引擎 {adapter.Engine} 的读取尚未实现");
+            return map;
+        }
+
+        var instBindings = adapter.Bindings.Where(b => b.Kind == "instance_var").ToList();
+        var idbBindings = adapter.Bindings.Where(b => b.Kind == "indexeddb_key").ToList();
+
+        using var cdp = CdpClient.Connect(adapter.Connection.DebugPort, adapter.Connection.TitleFilter);
+
+        // ---- 一轮取完所有实例变量 ----
+        if (instBindings.Count > 0)
+        {
+            string rt = adapter.EngineOptions.RuntimePath;
+            // 按对象名分组，减少查找次数
+            var groups = instBindings.GroupBy(b => b.ObjectName);
+            var reqs = groups.Select(g => new
+            {
+                obj = g.Key,
+                vars = g.Select(b => b.VarName).ToArray()
+            });
+
+            string script = $$"""
+(() => {
+  const RT = {{rt}};
+  const REQS = {{JsonSerializer.Serialize(reqs)}};
+  try {
+    if (!RT) return JSON.stringify({ error: '未找到运行时' });
+    const classes = [...RT.GetAllObjectClasses()];
+    const out = {};
+    for (const req of REQS) {
+      const cls = classes.find(c => c.GetName() === req.obj);
+      if (!cls) { for (const v of req.vars) out[req.obj + '.' + v] = { error: '对象不存在' }; continue; }
+      const insts = [...cls.GetInstances()];
+      if (insts.length === 0) { for (const v of req.vars) out[req.obj + '.' + v] = { error: '无实例' }; continue; }
+      const inst = insts[0];
+      const names = inst._GetAllInstanceVariableNames();
+      for (const v of req.vars) {
+        const i = names.indexOf(v);
+        if (i < 0) { out[req.obj + '.' + v] = { error: '变量不存在' }; continue; }
+        let val = inst.GetInstanceVariableValue(i);
+        if (typeof val === 'number' && Number.isNaN(val)) val = 'NaN';
+        out[req.obj + '.' + v] = { value: val };
+      }
+    }
+    return JSON.stringify(out);
+  } catch (e) { return JSON.stringify({ error: String(e && e.message || e) }); }
+})()
+""";
+            try
+            {
+                string raw = cdp.Evaluate(script, timeoutMs: 20000);
+                using var doc = JsonDocument.Parse(raw);
+                var root = doc.RootElement;
+
+                if (root.TryGetProperty("error", out var gerr))
+                {
+                    foreach (var b in instBindings)
+                        map[b.Semantic] = new ReadResult(b.Semantic, false, null, b.Describe(), gerr.GetString());
+                }
+                else
+                {
+                    foreach (var b in instBindings)
+                    {
+                        string key = b.ObjectName + "." + b.VarName;
+                        if (root.TryGetProperty(key, out var cell))
+                        {
+                            if (cell.TryGetProperty("error", out var e2))
+                                map[b.Semantic] = new ReadResult(b.Semantic, false, null, b.Describe(), e2.GetString());
+                            else
+                                map[b.Semantic] = new ReadResult(b.Semantic, true,
+                                    cell.GetProperty("value").GetRawText(), b.Describe(), null);
+                        }
+                        else
+                        {
+                            map[b.Semantic] = new ReadResult(b.Semantic, false, null, b.Describe(), "结果缺失");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                foreach (var b in instBindings)
+                    map[b.Semantic] = new ReadResult(b.Semantic, false, null, b.Describe(), ex.Message);
+            }
+        }
+
+        // ---- IndexedDB 部分：一轮取完所有键 ----
+        if (idbBindings.Count > 0)
+        {
+            string db = adapter.EngineOptions.LocalStorageDb;
+            string store = string.IsNullOrWhiteSpace(adapter.EngineOptions.ObjectStore)
+                ? "keyvaluepairs" : adapter.EngineOptions.ObjectStore;
+            string script = $$"""
+(async () => {
+  const DB = {{JsonSerializer.Serialize(db)}};
+  const STORE = {{JsonSerializer.Serialize(store)}};
+  const KEYS = {{JsonSerializer.Serialize(idbBindings.Select(b => b.StorageKey))}};
+  try {
+    const d = await new Promise((res, rej) => {
+      const q = indexedDB.open(DB);
+      q.onsuccess = () => res(q.result);
+      q.onerror = () => rej(q.error);
+    });
+    const out = {};
+    for (const k of KEYS) {
+      try {
+        const v = await new Promise((res, rej) => {
+          const tx = d.transaction(STORE, 'readonly');
+          const q = tx.objectStore(STORE).get(k);
+          tx.oncomplete = () => res(q.result);
+          tx.onerror = () => rej(tx.error);
+        });
+        out[k] = { value: (v === undefined ? null : v) };
+      } catch (e) { out[k] = { error: String(e && e.message || e) }; }
+    }
+    d.close();
+    return JSON.stringify(out);
+  } catch (e) { return JSON.stringify({ error: String(e && e.message || e) }); }
+})()
+""";
+            try
+            {
+                string raw = cdp.Evaluate(script, awaitPromise: true, timeoutMs: 20000);
+                using var doc = JsonDocument.Parse(raw);
+                var root = doc.RootElement;
+                foreach (var b in idbBindings)
+                {
+                    if (root.TryGetProperty(b.StorageKey, out var cell))
+                    {
+                        if (cell.TryGetProperty("error", out var e2))
+                            map[b.Semantic] = new ReadResult(b.Semantic, false, null, b.Describe(), e2.GetString());
+                        else
+                            map[b.Semantic] = new ReadResult(b.Semantic, true,
+                                cell.GetProperty("value").GetRawText(), b.Describe(), null);
+                    }
+                    else
+                    {
+                        map[b.Semantic] = new ReadResult(b.Semantic, false, null, b.Describe(), "结果缺失");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                foreach (var b in idbBindings)
+                    map[b.Semantic] = new ReadResult(b.Semantic, false, null, b.Describe(), ex.Message);
+            }
+        }
+
+        return map;
+    }
+
     /// <summary>连接一次，批量读取多个语义。</summary>
     public static List<ReadResult> Read(GameAdapter adapter, IEnumerable<string> semantics)
     {

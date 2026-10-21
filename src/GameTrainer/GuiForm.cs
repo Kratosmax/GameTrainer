@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using GameTrainer.Adapter;
 using GameTrainer.Core;
 using GameTrainer.Engine;
 using GameTrainer.Memory;
@@ -24,6 +25,8 @@ internal sealed class GuiForm : Form
 {
     private readonly string _skillRoot;
     private ProcessMemory _mem;
+    private GameAdapter _adapter;
+    private readonly Dictionary<string, ValueCard> _cards = new(StringComparer.OrdinalIgnoreCase);
     private GameProfile _profile;
     private PatchEngine _engine;
     private SaveEngine _save;
@@ -95,8 +98,8 @@ internal sealed class GuiForm : Form
         BackColor = Tokens.PageBack;
         ForeColor = Tokens.TextPrimary;
         Font = Tokens.FontBody;
-        MinimumSize = new Size(880, 620);
-        Size = new Size(1120, 760);
+        MinimumSize = new Size(1000, 700);
+        Size = new Size(1440, 900);
         StartPosition = FormStartPosition.CenterScreen;
         DoubleBuffered = true;
         KeyPreview = true;
@@ -554,51 +557,303 @@ internal sealed class GuiForm : Form
 
     // ---------------- 业务 ----------------
 
+    /// <summary>
+    /// 加载适配包（adapters/&lt;id&gt;/adapter.json）到侧栏。
+    /// 适配包是推荐路径：主程序只认语义，换游戏不用改代码。
+    /// 旧的 profiles/ 仍保留兼容，但排在适配包之后。
+    /// </summary>
     private void LoadProfiles()
     {
         _profileList.Clear();
-        string dir = Path.Combine(_skillRoot, "profiles");
-        if (!Directory.Exists(dir))
-        {
-            Log("没有 profiles 目录，请先创建 profile。");
-            _profileEmpty.Text = "没有 profiles 目录\n请在程序目录下创建 profiles\\";
-            return;
-        }
-
-        string[] files = Directory.GetFiles(dir, "*.json");
-        Array.Sort(files, StringComparer.OrdinalIgnoreCase);
-
-        foreach (string f in files)
-        {
-            try
-            {
-                GameProfile p = ProfileLoader.Load(f);
-                string sub = $"{p.Exe} · {p.Patches.Count} 个修改项";
-                _profileList.Add(p.Name, sub, p, invalid: false);
-            }
-            catch (Exception ex)
-            {
-                string msg = ex.Message.Split('\n')[0];
-                // 长错误不塞满侧栏，取首句
-                if (msg.Length > 40) msg = msg[..40] + "…";
-                _profileList.Add(Path.GetFileName(f), "[无效] " + msg, null, invalid: true);
-            }
-        }
+        int adapters = LoadAdapters();
+        int profiles = LoadLegacyProfiles();
 
         bool has = _profileList.Count > 0;
         _profileList.Visible = has;
         _profileEmpty.Visible = !has;
 
-        if (has) _profileList.Select(0);
-        else Log("profiles 目录为空。");
+        if (has)
+        {
+            _profileList.Select(0);
+        }
+        else
+        {
+            _profileEmpty.Text = "还没有可用的游戏配置\n用 probe 生成适配包，或在 profiles\\ 放 json";
+            Log($"未找到任何配置（适配包 {adapters} 个，旧 profile {profiles} 个）。");
+        }
+    }
+
+    /// <summary>扫描 adapters 目录。</summary>
+    private int LoadAdapters()
+    {
+        string dir = Path.Combine(_skillRoot, "adapters");
+        if (!Directory.Exists(dir)) return 0;
+
+        int n = 0;
+        foreach (string sub in Directory.GetDirectories(dir).OrderBy(x => x))
+        {
+            string f = Path.Combine(sub, "adapter.json");
+            if (!File.Exists(f)) continue;
+            try
+            {
+                var a = GameAdapter.Load(f);
+                string sub2 = $"{a.Engine} · {a.Bindings.Count} 个数值";
+                _profileList.Add(a.Name, sub2, a, invalid: false);
+                n++;
+            }
+            catch (Exception ex)
+            {
+                string msg = ex.Message.Split('\n')[0];
+                if (msg.Length > 40) msg = msg[..40] + "…";
+                _profileList.Add(Path.GetFileName(sub), "[无效] " + msg, null, invalid: true);
+            }
+        }
+        return n;
+    }
+
+    /// <summary>扫描旧 profiles 目录（兼容）。</summary>
+    private int LoadLegacyProfiles()
+    {
+        string dir = Path.Combine(_skillRoot, "profiles");
+        if (!Directory.Exists(dir)) return 0;
+
+        string[] files = Directory.GetFiles(dir, "*.json");
+        Array.Sort(files, StringComparer.OrdinalIgnoreCase);
+
+        int n = 0;
+        foreach (string f in files)
+        {
+            try
+            {
+                GameProfile p = ProfileLoader.Load(f);
+                _profileList.Add(p.Name, $"{p.Exe} · {p.Patches.Count} 个修改项", p, invalid: false);
+                n++;
+            }
+            catch (Exception ex)
+            {
+                string msg = ex.Message.Split('\n')[0];
+                if (msg.Length > 40) msg = msg[..40] + "…";
+                _profileList.Add(Path.GetFileName(f), "[无效] " + msg, null, invalid: true);
+            }
+        }
+        return n;
     }
 
     private void OnProfileSelected()
     {
-        if (_profileList.SelectedTag is not GameProfile p) return;
-        _profile = p;
-        BuildPatchRows();
-        Log($"已选择 profile：{p.Id}（{p.Patches.Count} 个修改项）");
+        switch (_profileList.SelectedTag)
+        {
+            case GameAdapter a:
+                _adapter = a;
+                _profile = null;
+                BuildValueCards();
+                Log($"已选择适配包：{a.Id}（{a.Bindings.Count} 个数值）");
+                _ = RefreshValuesAsync();
+                break;
+
+            case GameProfile p:
+                _adapter = null;
+                _profile = p;
+                BuildPatchRows();
+                Log($"已选择 profile：{p.Id}（{p.Patches.Count} 个修改项）");
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 按适配包的绑定生成数值卡片网格。
+    /// 布局：自适应列数（每列至少 260px），多行多列，容器可纵向滚动。
+    /// </summary>
+    private void BuildValueCards()
+    {
+        _patchHost.Controls.Clear();
+        _cards.Clear();
+        if (_adapter == null) return;
+
+        bool empty = _adapter.Bindings.Count == 0;
+        _patchEmpty.Visible = empty;
+        _patchHost.Visible = !empty;
+        if (empty)
+        {
+            _patchEmpty.Heading = "这个适配包还没有绑定数值";
+            _patchEmpty.Detail = "用 probe 重新生成，或手工编辑 adapter.json 的 bindings";
+            return;
+        }
+
+        var grid = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = Tokens.Surface,
+            Padding = new Padding(0),
+            Margin = new Padding(0),
+            ColumnCount = 1,
+            RowCount = 0
+        };
+
+        foreach (var b in _adapter.Bindings)
+        {
+            var style = b.Style switch
+            {
+                "fill" => ValueCard.Style.Fill,
+                "step" => ValueCard.Style.Step,
+                "toggle" => ValueCard.Style.Toggle,
+                _ => ValueCard.Style.Number
+            };
+
+            var card = new ValueCard(
+                b.Semantic,
+                Semantics.Display(b.Semantic),
+                style,
+                b.Range,
+                b.Step,
+                b.FillFrom,
+                b.AllowPersist,
+                b.OnValue,
+                b.Warning)
+            {
+                Margin = new Padding(Tokens.S2, Tokens.S2, Tokens.S2, Tokens.S2),
+                Dock = DockStyle.Fill
+            };
+
+            card.ApplyRequested += (sem, val) => ApplyValue(sem, val.ToString());
+            card.FillRequested += sem => FillValue(sem);
+            card.ToggleRequested += (sem, on, persist) => ToggleValue(sem, on, persist);
+
+            _cards[b.Semantic] = card;
+        }
+
+        _patchHost.Controls.Add(grid);
+        _patchHost.Resize += (_, _) => RelayoutGrid(grid);
+        RelayoutGrid(grid);
+    }
+
+    /// <summary>按容器宽度决定列数并重新铺卡片。</summary>
+    private void RelayoutGrid(TableLayoutPanel grid)
+    {
+        if (grid == null || grid.IsDisposed) return;
+        int w = _patchHost.ClientSize.Width - _patchHost.Padding.Horizontal;
+        if (w < 200) return;
+
+        const int minCol = 260;
+        int cols = Math.Max(1, w / minCol);
+        if (cols > 4) cols = 4;
+
+        var cards = _cards.Values.ToList();
+        if (cards.Count == 0) return;
+
+        grid.SuspendLayout();
+        grid.Controls.Clear();
+        grid.ColumnStyles.Clear();
+        grid.RowStyles.Clear();
+        grid.ColumnCount = cols;
+        for (int i = 0; i < cols; i++)
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / cols));
+
+        int rows = (cards.Count + cols - 1) / cols;
+        grid.RowCount = rows;
+        for (int i = 0; i < rows; i++)
+            grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        for (int i = 0; i < cards.Count; i++)
+            grid.Controls.Add(cards[i], i % cols, i / cols);
+
+        grid.ResumeLayout(true);
+    }
+
+    /// <summary>异步刷新全部数值（合并成 2 次往返，不阻塞 UI）。</summary>
+    private async Task RefreshValuesAsync()
+    {
+        if (_adapter == null) return;
+        var adapter = _adapter;
+
+        Dictionary<string, AdapterRunner.ReadResult> results;
+        try
+        {
+            results = await Task.Run(() => AdapterRunner.ReadAll(adapter));
+        }
+        catch (Exception ex)
+        {
+            foreach (var card in _cards.Values)
+                card.SetValue(null, false, ex.Message);
+            Log("[错误] 读取失败：" + ex.Message);
+            return;
+        }
+
+        int ok = 0, fail = 0;
+        foreach (var kv in results)
+        {
+            if (!_cards.TryGetValue(kv.Key, out var card)) continue;
+            card.SetValue(kv.Value.Value, kv.Value.Ok, kv.Value.Error);
+            if (kv.Value.Ok) ok++; else fail++;
+        }
+        Log($"已刷新数值：成功 {ok}，失败 {fail}");
+    }
+
+    private void ApplyValue(string semantic, string raw)
+    {
+        if (_adapter == null) return;
+        var adapter = _adapter;
+        var b = adapter.FindBinding(semantic);
+
+        try
+        {
+            var r = AdapterRunner.Write(adapter, semantic, raw, dryRun: false);
+            if (r.Ok)
+            {
+                Log($"{Semantics.Display(semantic)}: {r.Before} → {r.After}" + (r.Realtime ? "  [实时]" : "  [需重载]"));
+                if (_cards.TryGetValue(semantic, out var card))
+                    card.SetValue(r.After, true);
+            }
+            else
+            {
+                Log($"[失败] {Semantics.Display(semantic)}: {r.Error}");
+                if (_cards.TryGetValue(semantic, out var card))
+                    card.SetValue(null, false, r.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("[错误] " + ex.Message);
+        }
+    }
+
+    /// <summary>「回满」：取 FillFrom 指向的语义当前值作为目标。</summary>
+    private void FillValue(string semantic)
+    {
+        if (_adapter == null) return;
+        var b = _adapter.FindBinding(semantic);
+        string target = null;
+
+        if (!string.IsNullOrWhiteSpace(b?.FillFrom))
+        {
+            var src = AdapterRunner.Read(_adapter, new[] { b.FillFrom });
+            var hit = src.FirstOrDefault(x => x.Ok);
+            if (hit != null) target = hit.Value;
+        }
+
+        // 退路：没有 fillFrom 时用 binding 自身 range 上限
+        if (string.IsNullOrWhiteSpace(target) && b?.Range is { Length: 2 })
+            target = b.Range[1].ToString("0");
+
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            Log($"[提示] {Semantics.Display(semantic)} 没有配置 fillFrom，无法回满。");
+            return;
+        }
+
+        ApplyValue(semantic, target);
+    }
+
+    private void ToggleValue(string semantic, bool on, bool persist)
+    {
+        if (_adapter == null) return;
+        var b = _adapter.FindBinding(semantic);
+        double target = on ? (b?.OnValue ?? 1) : 0;
+        ApplyValue(semantic, target.ToString("0"));
+        if (on && persist)
+            Log($"[提示] {Semantics.Display(semantic)} 持久模式：监控尚未启用（待实现）");
     }
 
     private void BuildPatchRows()

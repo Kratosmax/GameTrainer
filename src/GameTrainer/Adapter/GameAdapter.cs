@@ -49,6 +49,14 @@ internal sealed class GameAdapter
     /// </summary>
     public List<ValueBinding> Bindings { get; set; } = new();
 
+    /// <summary>
+    /// 一键预设：把一组常用数值打包，一条命令全部应用。
+    ///
+    /// 用途：有些值每局都会被游戏重置（例如角色初始血量上限来自数据表），
+    /// 那么「每局开局改一次」就该是一条命令，而不是逐项敲。
+    /// </summary>
+    public List<PresetSpec> Presets { get; set; } = new();
+
     /// <summary>探测过程记录：这个游戏是怎么被破解的。给下一个人/下一个会话看。</summary>
     public ProbeNotes Notes { get; set; } = new();
 
@@ -125,6 +133,27 @@ internal sealed class GameAdapter
     }
 }
 
+/// <summary>
+/// 一键预设：一组「语义 → 目标值」，一次应用完毕。
+///
+/// 为什么需要它：部分数值每局会被游戏重置（如角色初始血量上限来自数据表），
+/// 那就得每局改一次。逐项敲三条命令太烦，打包成 preset 后只需一条。
+/// </summary>
+internal sealed class PresetSpec
+{
+    /// <summary>预设 id，命令行引用。</summary>
+    public string Id { get; set; } = "";
+
+    /// <summary>显示名。</summary>
+    public string Label { get; set; } = "";
+
+    /// <summary>说明：这个预设会改什么、适用场景。</summary>
+    public string Description { get; set; } = "";
+
+    /// <summary>语义 → 目标值。值统一用字符串，按 binding 的 valueType 解析。</summary>
+    public Dictionary<string, string> Values { get; set; } = new();
+}
+
 /// <summary>连接参数。</summary>
 internal sealed class ConnectionSpec
 {
@@ -161,6 +190,13 @@ internal sealed class EngineSpec
 
     /// <summary>旧版存档（System Save slot）库名，通常不存在。</summary>
     public string SavegamesDb { get; set; }
+
+    /// <summary>
+    /// 视为「对局进行中」的场景名白名单。
+    /// 用途：持久化监控（如持久套盾）只在局内生效，退出对局自动解除。
+    /// 留空时退化为「实例存在即视为局内」。
+    /// </summary>
+    public List<string> InGameLayouts { get; set; } = new();
 }
 
 /// <summary>
@@ -200,6 +236,41 @@ internal sealed class ValueBinding
 
     /// <summary>备注。</summary>
     public string Note { get; set; }
+
+    /// <summary>
+    /// 界面交互样式。决定 GUI 上这个值用哪种控件：
+    ///   fill      主按钮「回满」+ 折叠手动设置   —— 血量、能量累积
+    ///   step      增减按钮 + 折叠手动设置        —— 攻击、魔法、能量、背包
+    ///   number    输入框 + 应用按钮              —— 金币
+    ///   toggle    开关（设置/取消）              —— 护盾
+    /// 缺省按 number 处理。
+    /// </summary>
+    public string Style { get; set; } = "number";
+
+    /// <summary>
+    /// style=step 时每次增减的步长。默认 1。
+    /// </summary>
+    public double Step { get; set; } = 1;
+
+    /// <summary>
+    /// 「回满」时的目标值从哪个语义取（如 health 回满取 health_max）。
+    /// 留空时使用该 binding 自己的 range 上限或当前会话最大值。
+    /// </summary>
+    public string FillFrom { get; set; }
+
+    /// <summary>
+    /// style=toggle 时「开启」要写入的值。默认 1。
+    /// </summary>
+    public double OnValue { get; set; } = 1;
+
+    /// <summary>
+    /// 是否支持「持久」模式（仅 toggle 有意义）。
+    /// 开启后监视器会在值丢失时自动补回，退出对局自动停止。
+    /// </summary>
+    public bool AllowPersist { get; set; }
+
+    /// <summary>界面上的警告文字（如「测试项」）。</summary>
+    public string Warning { get; set; }
 
     /// <summary>人类可读的取值位置描述，用于报告。</summary>
     public string Describe() => Kind switch

@@ -154,6 +154,7 @@ internal static class Program
             case "sem": return CmdSemantic(a);
             case "launch": return CmdLaunch(a);
             case "status": return CmdStatus(a);
+            case "preset": return CmdPreset(a);
             case "jsobj": return CmdJsObj(a);
             case "jssetvar": return CmdJsSetVar(a);
             case "gui": return GuiForm.Run(_skillRoot);
@@ -438,6 +439,94 @@ internal static class Program
     }
 
     // ---------------- 适配包（Game Adapter Pack）----------------
+
+    /// <summary>
+    /// preset &lt;gameId&gt; [presetId] [--dry-run]
+    /// 一键应用预设：把一组「语义→目标值」一次性写完。
+    /// 不带 presetId 时列出全部预设。
+    ///
+    /// 存在理由：有些值每局被游戏重置（如角色初始血量上限来自数据表），
+    /// 逐项敲命令太烦，于是打包成一条。
+    /// </summary>
+    private static int CmdPreset(string[] a)
+    {
+        if (a.Length < 2)
+        {
+            Console.Error.WriteLine("用法: preset <gameId> [presetId] [--dry-run]");
+            return 2;
+        }
+
+        string path = Path.Combine(_skillRoot, "adapters", a[1], "adapter.json");
+        if (!File.Exists(path)) { Console.Error.WriteLine($"找不到适配包: {path}"); return 2; }
+
+        GameAdapter adapter;
+        try { adapter = GameAdapter.Load(path); }
+        catch (Exception ex) { WriteError("[错误] " + ex.Message); return 1; }
+
+        // 只列预设
+        if (a.Length < 3 || a[2].StartsWith("-"))
+        {
+            if (adapter.Presets.Count == 0)
+            {
+                Console.WriteLine($"{adapter.Name} 没有配置预设。");
+                return 0;
+            }
+            Console.WriteLine($"{adapter.Name} 的预设 ({adapter.Presets.Count} 个):");
+            foreach (var p in adapter.Presets)
+            {
+                Console.WriteLine($"  {p.Id,-14} {p.Label}");
+                if (!string.IsNullOrWhiteSpace(p.Description))
+                    Console.WriteLine($"                 {p.Description}");
+                Console.WriteLine($"                 值: {string.Join(", ", p.Values.Select(kv => $"{kv.Key}={kv.Value}"))}");
+            }
+            Console.WriteLine();
+            Console.WriteLine($"用法: preset {adapter.Id} <presetId> [--dry-run]");
+            return 0;
+        }
+
+        string presetId = a[2];
+        bool dryRun = a.Contains("--dry-run");
+        var preset = adapter.Presets.FirstOrDefault(p => string.Equals(p.Id, presetId, StringComparison.OrdinalIgnoreCase));
+        if (preset == null)
+        {
+            Console.Error.WriteLine($"找不到预设: {presetId}");
+            Console.Error.WriteLine("可用: " + string.Join(", ", adapter.Presets.Select(p => p.Id)));
+            return 2;
+        }
+
+        try
+        {
+            if (adapter.Engine != "native_memory")
+                EnsureCdpReady(adapter, adapter.Connection.DebugPort, line => Console.WriteLine(line));
+
+            Console.WriteLine($"{(dryRun ? "(dry-run) " : "")}应用预设 {preset.Id}：{preset.Label}");
+
+            int ok = 0, fail = 0;
+            foreach (var kv in preset.Values)
+            {
+                var r = AdapterRunner.Write(adapter, kv.Key, kv.Value, dryRun);
+                if (r.Ok)
+                {
+                    ok++;
+                    Console.WriteLine($"  {Semantics.Display(r.Semantic),-8} {r.Before,8} → {r.After,-8}" +
+                                      (r.Realtime ? " [实时]" : " [需重载]"));
+                }
+                else
+                {
+                    fail++;
+                    Console.Error.WriteLine($"  {Semantics.Display(kv.Key),-8} ! {r.Error}");
+                }
+            }
+
+            Console.WriteLine($"完成：成功 {ok}，失败 {fail}");
+            return fail == 0 ? 0 : 1;
+        }
+        catch (Exception ex)
+        {
+            WriteError("[错误] " + ex.Message);
+            return 1;
+        }
+    }
 
     /// <summary>
 /// 确保 CDP 端口就绪。不通时按适配包自动 launch（方案 A 的完整形态）：
