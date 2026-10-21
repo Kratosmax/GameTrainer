@@ -52,6 +52,7 @@ internal sealed class GuiForm : Form
     private readonly FlatButton _refreshBtn = new();
     private readonly FlatButton _settingsBtn = new();
     private readonly FlatButton _backBtn = new();
+    private readonly Label _updateDot = new();
 
     // 侧栏
     private readonly ProfileListBox _profileList = new();
@@ -144,6 +145,14 @@ internal sealed class GuiForm : Form
     /// 为什么静默失败：没网、被墙、GitHub 挂了都不该打扰用户——
     /// 更新是锦上添花，不是启动的必要条件。只有真发现新版本才提示。
     /// </summary>
+    /// <summary>
+    /// 启动后延迟 3 秒静默检查更新。
+    ///
+    /// 与旧行为的区别：发现新版本不再直接弹窗打断用户，
+    /// 而是在顶栏亮一个红点；用户点它才看公告和决定是否更新。
+    /// 弹窗打断在"用户正要改游戏数值"的场景里很讨嫌，
+    /// 而更新公告属于低频信息，应该可见但不侵入。
+    /// </summary>
     private void ScheduleAutoUpdateCheck()
     {
         var prefs = UpdatePrefs.Load();
@@ -165,11 +174,11 @@ internal sealed class GuiForm : Form
                 if (prefs.IsSkipped(r.Latest.Version)) return;
                 if (IsDisposed || !IsHandleCreated) return;
 
-                Log($"发现新版本 {r.Latest.Version.ToString(3)}（当前 {AppVersion.Display}）");
-                using var dlg = new UpdateDialog(r.Latest, prefs);
-                dlg.ShowDialog(this);
+                Log($"发现新版本 {r.Latest.Version.ToString(3)}（当前 {AppVersion.Display}），点顶栏红点查看");
 
-                if (dlg.ReadyToRestart) Application.Exit();
+                // 只亮红点，不弹窗
+                _pendingUpdate = r.Latest;
+                ShowUpdateDot(r.Latest.Version.ToString(3));
             }
             catch
             {
@@ -177,6 +186,36 @@ internal sealed class GuiForm : Form
             }
         };
         timer.Start();
+    }
+
+    private UpdateInfo _pendingUpdate;
+
+    /// <summary>
+    /// 在顶栏显示"有新版本"红点。点它才打开公告对话框。
+    /// </summary>
+    private void ShowUpdateDot(string version)
+    {
+        if (_updateDot == null) return;
+
+        _updateDot.Text = $"● 新版本 {version}";
+        _updateDot.Visible = true;
+        _updateDot.ForeColor = Tokens.Danger;
+    }
+
+    /// <summary>点击红点：打开更新公告。</summary>
+    private void OpenPendingUpdate()
+    {
+        if (_pendingUpdate == null) return;
+
+        var prefs = UpdatePrefs.Load();
+        using var dlg = new UpdateDialog(_pendingUpdate, prefs);
+        dlg.ShowDialog(this);
+
+        if (dlg.ReadyToRestart) Application.Exit();
+
+        // 用户可能选了"跳过此版本"，那就把红点收掉
+        if (prefs.IsSkipped(_pendingUpdate.Version) && _updateDot != null)
+            _updateDot.Visible = false;
     }
 
 
@@ -326,6 +365,18 @@ internal sealed class GuiForm : Form
         _backBtn.Margin = new Padding(0, 0, Tokens.S2, 0);
         _backBtn.Click += (_, _) => ShowHomePage();
 
+        _updateDot.Text = "";
+        _updateDot.Visible = false;
+        _updateDot.AutoSize = true;
+        _updateDot.Font = Tokens.FontCaption;
+        _updateDot.ForeColor = Tokens.Danger;
+        _updateDot.Cursor = Cursors.Hand;
+        _updateDot.TextAlign = ContentAlignment.MiddleRight;
+        _updateDot.Margin = new Padding(0, 0, Tokens.S2, 0);
+        _updateDot.Padding = new Padding(0, 0, 0, 0);
+        _updateDot.Click += (_, _) => OpenPendingUpdate();
+
+        actions.Controls.Add(_updateDot);
         actions.Controls.Add(_backBtn);
         actions.Controls.Add(_attachBtn);
         actions.Controls.Add(_refreshBtn);
@@ -1380,6 +1431,16 @@ internal sealed class GuiForm : Form
                 _attachBadge.SetStyle(Tokens.DangerSubtle, Tokens.Danger, "读取失败");
                 return;
             }
+
+                // 全失败时自动重试一次：切换游戏、读档、游戏刚重启都会让
+                // 上一次的定位缓存失效。清缓存重扫通常能直接恢复，
+                // 不必让用户自己去点「刷新数值」。
+                if (results.Count > 0 && results.Values.All(x => !x.Ok))
+                {
+                    Log("[重试] 全部读取失败，清定位缓存后重试一次…");
+                    SaveLocator.Invalidate();
+                    results = await Task.Run(() => AdapterRunner.ReadAll(adapter));
+                }
 
             int ok = 0, fail = 0;
             string firstError = null;

@@ -617,3 +617,33 @@ temp\preview\verify\GameTrainer.exe adapters
 ### 本轮提交
 
 `b6e15db` feat: 启动器式首页 + 九项问题修复（22 文件，+2091 −393）
+
+### 追加改动（2026-10-22 03:30）
+
+| 项 | 内容 |
+|---|---|
+| 更新公告改为非侵入 | 发现新版本不再弹窗打断，顶栏亮红点「● 新版本 x.y.z」，点它才看公告 |
+| 全失败自动重试 | RefreshValuesAsync 里若所有语义都失败，清 SaveLocator 缓存重试一次，覆盖"切换游戏/读档后失效" |
+| 移除 _stacked 死字段 | 编译警告清零 |
+
+### 发布流程（已验证结构，待 CI 完成）
+
+发布走 GitHub Actions，本地无签名私钥：
+
+```
+push tag v1.1.0
+  → .github/workflows/release.yml
+    → 校验 tag 与 Directory.Build.props 版本一致
+    → 从 secrets.GAMETRAINER_UPDATE_SIGNING_KEY 取私钥
+    → build/release.ps1 构建 8 个资产
+    → 校验资产齐全后 gh release create
+```
+
+本地已确认：`build/release.ps1` 存在且支持 ISCC + 签名 + 三份清单。
+
+### 仍需人工验证
+
+- 拖动窗口卡顿（需要真实拖动，无法脚本化）
+- 双击修改项打开设置弹窗（需要真实双击）
+- 首页点卡片进入游戏页（需要真实点击）
+- 适配包下载端到端（需要 index.json 已在远端，本次推送后可用）
