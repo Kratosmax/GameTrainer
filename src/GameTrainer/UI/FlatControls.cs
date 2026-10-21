@@ -99,6 +99,16 @@ internal sealed class FlatButton : Button
         };
     }
 
+    /// <summary>
+    /// 自绘按钮的 UIA 拿不到 Text，必须显式设置 AccessibleName，
+    /// 否则读屏软件与自动化工具看到的都是无名按钮（实测无障碍树 name 为空）。
+    /// </summary>
+    protected override void OnTextChanged(EventArgs e)
+    {
+        base.OnTextChanged(e);
+        AccessibleName = Text;
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         Graphics g = e.Graphics;

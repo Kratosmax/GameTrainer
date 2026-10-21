@@ -27,6 +27,7 @@ internal sealed class GuiForm : Form
     private ProcessMemory _mem;
     private GameAdapter _adapter;
     private readonly Dictionary<string, ValueCard> _cards = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PersistentWatcher> _watchers = new(StringComparer.OrdinalIgnoreCase);
     private GameProfile _profile;
     private PatchEngine _engine;
     private SaveEngine _save;
@@ -211,11 +212,11 @@ internal sealed class GuiForm : Form
             Draw.Text(g, "GameTrainer", Tokens.FontSection, Tokens.TextPrimary, nameRect);
         };
 
-        _attachBadge.SetStyle(Tokens.SurfaceSunken, Tokens.TextSecondary, "未附加");
+        _attachBadge.SetStyle(Tokens.SurfaceSunken, Tokens.TextSecondary, "未选择");
         _attachBadge.Margin = new Padding(0, 0, Tokens.S2, 0);
         _attachBadge.Anchor = AnchorStyles.Right;
 
-        _antiCheatBadge.SetStyle(Tokens.SurfaceSunken, Tokens.TextSecondary, "反作弊未检测");
+        _antiCheatBadge.SetStyle(Tokens.SurfaceSunken, Tokens.TextSecondary, "未连接");
         _antiCheatBadge.Margin = new Padding(0, 0, Tokens.S3, 0);
         _antiCheatBadge.Anchor = AnchorStyles.Right;
 
@@ -230,20 +231,23 @@ internal sealed class GuiForm : Form
             Anchor = AnchorStyles.Right
         };
 
-        _attachBtn.Text = "附加到游戏";
+        // 适配包模式：不需要「附加」，改为「启动游戏 / 刷新数值」\r\n        _attachBtn.Text = "启动游戏";
+        _attachBtn.AccessibleName = _attachBtn.Text;
         _attachBtn.Kind = ButtonKind.Primary;
         _attachBtn.Width = 116;
         _attachBtn.Margin = new Padding(0, 0, Tokens.S2, 0);
-        _attachBtn.Click += (_, _) => DoAttach();
+        _attachBtn.Click += (_, _) => DoLaunchOrRefresh();
 
-        _revertAllBtn.Text = "全部回滚";
+        _revertAllBtn.Text = "刷新数值";
+        _revertAllBtn.AccessibleName = _revertAllBtn.Text;
         _revertAllBtn.Kind = ButtonKind.Danger;
         _revertAllBtn.Width = 104;
         _revertAllBtn.Margin = new Padding(0, 0, Tokens.S2, 0);
         _revertAllBtn.Enabled = false;
-        _revertAllBtn.Click += (_, _) => DoRevertAll();
+        _revertAllBtn.Click += (_, _) => { if (_adapter != null) _ = RefreshValuesAsync(); else DoRevertAll(); };
 
         _settingsBtn.Text = "设置";
+        _settingsBtn.AccessibleName = _settingsBtn.Text;
         _settingsBtn.Width = 76;
         _settingsBtn.Margin = new Padding(0);
         _settingsBtn.Click += (_, _) => OpenSettings();
@@ -392,6 +396,12 @@ internal sealed class GuiForm : Form
         logPad.Controls.Add(logInner);
         _logCard.Controls.Add(logPad);
 
+        // 日志区可收起：点标题栏右侧的「收起」切换。
+        // 依据 ui-design.md：低频区占用主要空间时应提供可发现且状态稳定的折叠能力。
+        _logCard.ActionText = "收起";
+        _logCard.Cursor = Cursors.Hand;
+        _logCard.HeaderClick += () => ToggleLogCollapsed(logPad);
+
         _contentGrid.Controls.Add(_patchCard, 0, 0);
         _contentGrid.Controls.Add(_logCard, 1, 0);
 
@@ -402,7 +412,108 @@ internal sealed class GuiForm : Form
         return wrap;
     }
 
+
+
+    /// <summary>
+    /// 按适配包更新状态栏：连接状态、端口、可改数值数。
+    /// 让使用者一眼看出「现在能不能操作」。
+    /// </summary>
+    private void UpdateStatusForAdapter(GameAdapter a)
+    {
+        _statusAttach.Text = $"{a.Name} · {a.Engine}";
+
+        int port = a.Connection.DebugPort;
+        bool ok = GameLauncher.IsCdpReady(port, out _);
+        _statusAntiCheat.Text = ok ? $"调试端口：已连接 ({port})" : $"调试端口：未连接 ({port})";
+        _statusAntiCheat.ForeColor = ok ? Tokens.Success : Tokens.Warning;
+
+        _statusStartup.Text = $"{a.Bindings.Count} 个数值 · {a.Mode}";
+        _statusStartup.ForeColor = Tokens.TextSecondary;
+    }
+
+    /// <summary>
+    /// 顶栏「启动游戏」：适配包模式下先确保游戏带调试端口运行，再刷新数值。
+    /// 已连接时直接刷新，不重复启动。
+    /// </summary>
+    private void DoLaunchOrRefresh()
+    {
+        if (_adapter == null)
+        {
+            Log("请先在左侧选择一个游戏适配包。");
+            return;
+        }
+
+        int port = _adapter.Connection.DebugPort;
+        if (GameLauncher.IsCdpReady(port, out _))
+        {
+            Log("调试端口已就绪，直接刷新数值。");
+            _ = RefreshValuesAsync();
+            return;
+        }
+
+        Log($"正在启动 {_adapter.Name}…");
+        var r = GameLauncher.Launch(_adapter, progress: line => Log("  " + line.Trim()));
+        if (r.Ok && r.CdpReady)
+        {
+            _attachBadge.SetStyle(Tokens.SuccessSubtle, Tokens.Success, "已连接");
+            _antiCheatBadge.SetStyle(Tokens.SuccessSubtle, Tokens.Success, "调试端口就绪");
+            Log("启动成功，正在读取数值…");
+            UpdateStatusForAdapter(_adapter);
+            _ = RefreshValuesAsync();
+        }
+        else
+        {
+            _attachBadge.SetStyle(Tokens.DangerSubtle, Tokens.Danger, "启动失败");
+            Log("[失败] " + r.Message.Replace("\n", " "));
+        }
+    }
+
+    /// <summary>把冗长的连接错误压成一句短提示，供卡片显示。</summary>
+    private static string ShortenError(string err)
+    {
+        if (string.IsNullOrWhiteSpace(err)) return "读取失败";
+        if (err.Contains("无法连接")) return "未连接游戏";
+        if (err.Contains("无实例")) return "不在此场景";
+        if (err.Contains("对象不存在")) return "对象未加载";
+        if (err.Contains("变量不存在")) return "变量缺失";
+        string one = err.Split('\n')[0].Trim();
+        return one.Length > 24 ? one[..24] + "…" : one;
+    }
+
     private bool _stacked;
+    private bool _logCollapsed;
+
+    /// <summary>
+    /// 收起 / 展开日志区。
+    /// 收起时把右列压到最小宽度，把空间让给数值卡片——日志是低频信息，
+    /// 不该长期占用 42% 宽度（ui-design.md：低频区占主要空间时应可折叠）。
+    /// </summary>
+    private void ToggleLogCollapsed(Panel logPad)
+    {
+        _logCollapsed = !_logCollapsed;
+        logPad.Visible = !_logCollapsed;
+        _logCard.ActionText = _logCollapsed ? "展开" : "收起";
+        _logCard.Invalidate();
+
+        if (!_stacked)
+        {
+            _contentGrid.SuspendLayout();
+            _contentGrid.ColumnStyles.Clear();
+            if (_logCollapsed)
+            {
+                _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+            }
+            else
+            {
+                _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
+                _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+            }
+            _contentGrid.ResumeLayout(true);
+        }
+
+        Log(_logCollapsed ? "日志区已收起，点「展开」恢复。" : "日志区已展开。");
+    }
 
     private void RelayoutForWidth(int width)
     {
@@ -472,8 +583,10 @@ internal sealed class GuiForm : Form
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        ConfigureStatusLabel(_statusAttach, "未附加到游戏", Tokens.TextSecondary);
-        ConfigureStatusLabel(_statusAntiCheat, "反作弊：未检测", Tokens.TextSecondary);
+        // 状态栏改为反映「适配包 + 连接」语义，而不是旧的「附加/反作弊」。
+        // 依据 ui-design.md：状态文案要能说明当前是否可操作。
+        ConfigureStatusLabel(_statusAttach, "未选择适配包", Tokens.TextSecondary);
+        ConfigureStatusLabel(_statusAntiCheat, "调试端口：未知", Tokens.TextSecondary);
         ConfigureStatusLabel(_statusStartup, "开机自启：未启用", Tokens.TextSecondary);
         ConfigureStatusLabel(_hotkeyHint, "Ctrl+Alt+F1 启用 / F2 停用", Tokens.TextSecondary);
 
@@ -644,9 +757,11 @@ internal sealed class GuiForm : Form
         switch (_profileList.SelectedTag)
         {
             case GameAdapter a:
+                StopAllWatchers();
                 _adapter = a;
                 _profile = null;
                 BuildValueCards();
+                UpdateStatusForAdapter(a);
                 Log($"已选择适配包：{a.Id}（{a.Bindings.Count} 个数值）");
                 _ = RefreshValuesAsync();
                 break;
@@ -763,32 +878,76 @@ internal sealed class GuiForm : Form
     }
 
     /// <summary>异步刷新全部数值（合并成 2 次往返，不阻塞 UI）。</summary>
+    private bool _refreshing;
+
     private async Task RefreshValuesAsync()
     {
         if (_adapter == null) return;
-        var adapter = _adapter;
+        // 防重入：快速连点会并发建立 CDP 连接，前一次未完成不再发起（ui-design.md：长任务期间禁用冲突操作）
+        if (_refreshing) { Log("刷新进行中，请稍候…"); return; }
+        _refreshing = true;
 
-        Dictionary<string, AdapterRunner.ReadResult> results;
+        // 必须用 try/finally 释放标志：异常路径若提前 return，
+        // 标志会永久为 true，之后再也刷新不了。
         try
         {
-            results = await Task.Run(() => AdapterRunner.ReadAll(adapter));
-        }
-        catch (Exception ex)
-        {
-            foreach (var card in _cards.Values)
-                card.SetValue(null, false, ex.Message);
-            Log("[错误] 读取失败：" + ex.Message);
-            return;
-        }
+            var adapter = _adapter;
 
-        int ok = 0, fail = 0;
-        foreach (var kv in results)
-        {
-            if (!_cards.TryGetValue(kv.Key, out var card)) continue;
-            card.SetValue(kv.Value.Value, kv.Value.Ok, kv.Value.Error);
-            if (kv.Value.Ok) ok++; else fail++;
+            Dictionary<string, AdapterRunner.ReadResult> results;
+            try
+            {
+                results = await Task.Run(() => AdapterRunner.ReadAll(adapter));
+            }
+            catch (Exception ex)
+            {
+                // 这里的 ex 是连接级失败（如端口没开），同样要压短：
+                // 完整信息只在日志出现一次，卡片上只给一句原因。
+                string shortMsg = ShortenError(ex.Message);
+                foreach (var card in _cards.Values)
+                    card.SetValue(null, false, shortMsg);
+                Log("[错误] 读取失败：" + ex.Message.Replace("\n", " "));
+                _attachBadge.SetStyle(Tokens.DangerSubtle, Tokens.Danger, "读取失败");
+                return;
+            }
+
+            int ok = 0, fail = 0;
+            string firstError = null;
+
+            foreach (var kv in results)
+            {
+                if (!_cards.TryGetValue(kv.Key, out var card)) continue;
+
+                if (kv.Value.Ok)
+                {
+                    card.SetValue(kv.Value.Value, true);
+                    ok++;
+                }
+                else
+                {
+                    // 卡片上只显示简短原因，完整错误统一在日志里出现一次，
+                    // 否则同一个连接失败会在 11 张卡片上重复 11 遍（实测截图确认过）。
+                    card.SetValue(null, false, ShortenError(kv.Value.Error));
+                    firstError ??= kv.Value.Error;
+                    fail++;
+                }
+            }
+
+            if (fail == 0)
+            {
+                Log($"已刷新数值：成功 {ok}");
+                _attachBadge.SetStyle(Tokens.SuccessSubtle, Tokens.Success, "已连接");
+            }
+            else
+            {
+                Log($"已刷新数值：成功 {ok}，失败 {fail}");
+                if (firstError != null) Log("[错误] " + firstError.Replace("\n", " "));
+                _attachBadge.SetStyle(Tokens.DangerSubtle, Tokens.Danger, "读取失败");
+            }
         }
-        Log($"已刷新数值：成功 {ok}，失败 {fail}");
+        finally
+        {
+            _refreshing = false;
+        }
     }
 
     private void ApplyValue(string semantic, string raw)
@@ -852,8 +1011,44 @@ internal sealed class GuiForm : Form
         var b = _adapter.FindBinding(semantic);
         double target = on ? (b?.OnValue ?? 1) : 0;
         ApplyValue(semantic, target.ToString("0"));
+
+        // 持久监控：只有用户显式勾选且开关为开时才启动
+        StopWatcher(semantic);
+
         if (on && persist)
-            Log($"[提示] {Semantics.Display(semantic)} 持久模式：监控尚未启用（待实现）");
+        {
+            var w = new PersistentWatcher(_adapter, semantic, target);
+            w.Notified += msg => Log($"[持久] {Semantics.Display(semantic)}：{msg}");
+            w.Start();
+            _watchers[semantic] = w;
+            Log($"[持久] {Semantics.Display(semantic)} 监控已启动（每 1 秒检查，退出对局自动停止）");
+        }
+        else if (on)
+        {
+            Log($"{Semantics.Display(semantic)} 已开启（非持久，被打掉后不会自动补回）");
+        }
+    }
+
+    /// <summary>停止并移除某个语义的持久监控。</summary>
+    private void StopWatcher(string semantic)
+    {
+        if (_watchers.TryGetValue(semantic, out var w))
+        {
+            w.Stop();
+            w.Dispose();
+            _watchers.Remove(semantic);
+        }
+    }
+
+    /// <summary>停止全部持久监控（退出程序或切换适配包时调用）。</summary>
+    private void StopAllWatchers()
+    {
+        foreach (var w in _watchers.Values)
+        {
+            w.Stop();
+            w.Dispose();
+        }
+        _watchers.Clear();
     }
 
     private void BuildPatchRows()
@@ -943,7 +1138,7 @@ internal sealed class GuiForm : Form
             else
             {
                 _attachBadge.SetStyle(Tokens.SuccessSubtle, Tokens.Success, $"已附加 PID {_mem.Pid}");
-                _antiCheatBadge.SetStyle(Tokens.SurfaceSunken, Tokens.TextSecondary, "反作弊未检测");
+                _antiCheatBadge.SetStyle(Tokens.SurfaceSunken, Tokens.TextSecondary, "未连接");
                 _statusAttach.Text = $"已附加 PID {_mem.Pid} · {_profile.Exe}";
                 _statusAttach.ForeColor = Tokens.Success;
                 _statusAntiCheat.Text = "反作弊：未检测";
@@ -1152,6 +1347,7 @@ internal sealed class GuiForm : Form
 
     private void PerformExit()
     {
+        StopAllWatchers();
         if (_engine != null)
         {
             _engine.StopAllFreezes();

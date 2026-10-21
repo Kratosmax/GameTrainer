@@ -267,13 +267,19 @@ internal sealed class ValueCard : Panel
         {
             if (!ok)
             {
+                // 用弱化的「—」占住数值位，把原因放在下面小字里。
+                // 一开始把「读取失败」写成大号红字，10 张卡片同时变红非常刺眼，
+                // 而且把使用者最想看的数值位置占满了（实测截图确认）。
                 _value.Text = "—";
+                _value.ForeColor = Tokens.TextDisabled;
                 _hasValue = false;
-                _hint.Text = error ?? "读取失败";
-                _hint.ForeColor = Tokens.Danger;
+                _hint.Text = error ?? "无法读取";
+                _hint.ForeColor = Tokens.Warning;
                 SetControlsEnabled(false);
                 return;
             }
+
+            _value.ForeColor = Tokens.Accent;
 
             if (double.TryParse(raw, out double d))
             {

@@ -267,6 +267,9 @@ internal sealed class CardPanel : Panel
         }
     }
 
+    /// <summary>点击标题区时触发（用于折叠/展开卡片）。</summary>
+    public event Action HeaderClick;
+
     public CardPanel()
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint
@@ -274,6 +277,14 @@ internal sealed class CardPanel : Panel
         SetStyle(ControlStyles.SupportsTransparentBackColor, true);
         BackColor = Color.Transparent;
         DoubleBuffered = true;
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        // 只有点在标题区才算标题点击，避免正文区域误触
+        if (HeaderHeight > 0 && e.Y < HeaderHeight && e.Button == MouseButtons.Left)
+            HeaderClick?.Invoke();
+        base.OnMouseDown(e);
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -323,6 +334,7 @@ internal sealed class Badge : Control
         _back = back;
         _fore = fore;
         Text = text;
+        AccessibleName = text;   // 自绘控件的 UIA 需要显式设置
         int w = Draw.Measure(text, Font).Width + Tokens.S3 * 2;
         Width = Math.Max(48, w);
         Invalidate();
