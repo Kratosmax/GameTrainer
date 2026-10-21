@@ -87,12 +87,18 @@ foreach ($ch in $channels) {
     # 运行期资产：profiles 与 snapshots 必须随包分发，否则首次启动没有可用 profile。
     # 注意 Copy-Item 的坑：目标目录已存在时，-Destination <dir> 会把它复制成 <dir>\profiles，
     # 结果包内 profiles 是空的。必须明确目标是父目录。
+    #
+    # 但自测靶的 profile 不能进发行包：它指向 GtTestTarget.exe，
+    # 普通用户没有这个程序，看到只会困惑。用排除名单过滤。
     $profilesSrc = Join-Path $repoRoot 'profiles'
     $profilesDst = Join-Path $stage 'profiles'
+    $excludedProfiles = @('gttest.json')   # 自测靶专用，仅开发时使用
     if (Test-Path $profilesDst) { Remove-Item $profilesDst -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $profilesDst | Out-Null
     if (Test-Path $profilesSrc) {
-        Copy-Item (Join-Path $profilesSrc '*') -Destination $profilesDst -Recurse -Force -ErrorAction SilentlyContinue
+        Get-ChildItem $profilesSrc -File -ErrorAction SilentlyContinue |
+            Where-Object { $excludedProfiles -notcontains $_.Name } |
+            ForEach-Object { Copy-Item $_.FullName -Destination $profilesDst -Force }
     }
 
     # 首次启动需要激活记录目录存在

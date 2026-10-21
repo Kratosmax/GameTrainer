@@ -121,14 +121,53 @@ internal static class Program
         string env = Environment.GetEnvironmentVariable("GT_SKILL_ROOT");
         if (!string.IsNullOrWhiteSpace(env) && Directory.Exists(env)) return env;
 
-        // exe 所在目录即数据目录。开发期（bin/Release/net8.0-windows）向上找到
-        // 含 profiles 的工程级目录，保证 `dotnet run` 也能用。
-        var d = new DirectoryInfo(AppContext.BaseDirectory);
+        string baseDir = AppContext.BaseDirectory;
+
+        // 快路径：exe 同目录已有**非空的** adapters 或 profiles，就是它，不再向上找。
+        // 这一步必须存在——否则解压出的发行包会因上层目录恰好有同名目录
+        // 而被"劫持"到别人的数据目录（实测：包解压在工程内时，profiles
+        // 命令列出了仓库里的自测靶配置）。
+        //
+        // 但"存在"不够，必须是"有内容"：构建输出目录 bin/Release/net8.0-windows
+        // 下会残留一个空的 adapters（编译产物副产品），用存在性判断会让
+        // 开发期直接停在那层，找不到工程根。
+        if (HasData(Path.Combine(baseDir, "adapters")) ||
+            HasData(Path.Combine(baseDir, "profiles")))
+            return baseDir;
+
+        // 慢路径（仅开发期）：构建输出目录层级较深
+        // （temp/build/GameTrainer/Release/net8.0-windows 距工程根 4-5 层），
+        // 向上找含非空 adapters/profiles 的工程根。
+        //
+        // 安全边界靠 looksLikeRepo 把关：目标必须同时具备 .sln 或 src 目录，
+        // 才算"工程根"。没有这层判断，发行包解压在任意目录都可能被上层
+        // 同名的普通文件夹误认；有了它，即使解压在工程内部也只会认真正的仓库根
+        // （而仓库根的 adapters 非空时，包内自己也有非空 adapters，快路径会先命中）。
+        var d = new DirectoryInfo(baseDir);
         for (int i = 0; i < 6 && d != null; i++, d = d.Parent)
         {
-            if (Directory.Exists(Path.Combine(d.FullName, "profiles"))) return d.FullName;
+            bool hasData = HasData(Path.Combine(d.FullName, "adapters")) ||
+                           HasData(Path.Combine(d.FullName, "profiles"));
+            bool looksLikeRepo = File.Exists(Path.Combine(d.FullName, "GameTrainer.sln")) ||
+                                 Directory.Exists(Path.Combine(d.FullName, "src"));
+            if (hasData && looksLikeRepo) return d.FullName;
         }
-        return AppContext.BaseDirectory;
+
+        return baseDir;
+    }
+
+    /// <summary>
+    /// 目录是否存在且含有至少一个文件/子目录。
+    /// 用"有内容"而不是"存在"，避免空目录（编译副产品）被误认为数据目录。
+    /// </summary>
+    private static bool HasData(string dir)
+    {
+        try
+        {
+            return Directory.Exists(dir) &&
+                   Directory.EnumerateFileSystemEntries(dir).Any();
+        }
+        catch { return false; }
     }
 
     private static int Dispatch(string[] a)
