@@ -316,6 +316,92 @@ internal sealed class PatchEngine
         return n;
     }
 
+    /// <summary>
+    /// 适配包专用：按 AOB 签名定位目标地址（只读）。
+    ///
+    /// 复用 FindAob 的扫描与模块过滤逻辑，不重复实现一遍。
+    /// 返回的地址已叠加 offsets。
+    /// </summary>
+    public List<IntPtr> ResolveAddresses(string aob, IReadOnlyList<string> offsets,
+                                         string module, bool requireUnique, out string error)
+    {
+        error = null;
+        var result = new List<IntPtr>();
+
+        AobPattern pat;
+        try { pat = new AobPattern(aob); }
+        catch (Exception ex) { error = $"AOB 语法错误：{ex.Message}"; return result; }
+
+        // 借用 FindAob：它只需要 Module 字段
+        var probe = new WriteDef { Aob = aob, Module = module };
+        List<IntPtr> hits = FindAob(pat, probe, out error);
+        if (error != null) return result;
+
+        if (hits.Count == 0)
+        {
+            error = "AOB 未命中当前内存（游戏可能已更新，或该状态尚未加载）。";
+            return result;
+        }
+        if (requireUnique && hits.Count > 1)
+        {
+            error = $"AOB 命中 {hits.Count} 处（要求唯一）。请在签名中加入更多上下文。";
+            return result;
+        }
+
+        foreach (IntPtr hit in hits)
+        {
+            IntPtr addr = hit;
+            if (offsets != null)
+                foreach (string off in offsets)
+                    addr = new IntPtr(addr.ToInt64() + ParseOffset(off));
+            result.Add(addr);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// 适配包专用：读一个地址的原始字节。失败返回 null。
+    /// </summary>
+    public byte[] ReadBytes(IntPtr address, int size)
+    {
+        try { return _mem.Read(address, size); }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// 适配包专用：写一个地址，并把回滚点压栈。
+    ///
+    /// 与 Enable 的区别：不做 profile 里的 expectBefore/range 校验
+    /// （适配包在 AdapterRunner 层已做过区间校验），
+    /// 但仍然记录 before，保证可回滚。
+    /// </summary>
+    public bool WriteBytes(IntPtr address, byte[] after, out string error)
+    {
+        error = null;
+        try
+        {
+            byte[] before = _mem.Read(address, after.Length);
+            _rollback.Push(new WriteRecord
+            {
+                ProfileId = _profile?.Id,
+                PatchId = null,
+                Target = $"adapter:0x{address.ToInt64():X}",
+                Address = address.ToInt64(),
+                Before = before,
+                After = after,
+                ModuleName = null
+            });
+            _mem.Write(address, after);
+            _log.Write("write", _profile?.Exe ?? "adapter", null, Hex(after), Hex(before), after.Length);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"写入失败：{ex.Message}";
+            return false;
+        }
+    }
+
     public void StopAllFreezes()
     {
         foreach (var t in _freezes.Values) t.Stop();

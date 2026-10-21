@@ -37,6 +37,12 @@ internal sealed class GameAdapter
     /// <summary>安全模式：offline_only | readonly | allow。</summary>
     public string Mode { get; set; } = "offline_only";
 
+    /// <summary>
+    /// 额外需要检查的反作弊模块名。
+    /// 命中即整体只读，不做任何绕过（与 profile 的 anticheat.modules 同义）。
+    /// </summary>
+    public List<string> AntiCheatModules { get; set; } = new();
+
     /// <summary>连接配置（端口、标题过滤等）。</summary>
     public ConnectionSpec Connection { get; set; } = new();
 
@@ -221,6 +227,12 @@ internal sealed class ValueBinding
 
     /// <summary>memory_aob：AOB 签名。</summary>
     public string Aob { get; set; }
+
+    /// <summary>memory_aob：限定扫描的模块名（可选）。</summary>
+    public string Module { get; set; }
+
+    /// <summary>memory_aob：数值类型 byte/short/int/long/float/double。默认 double。</summary>
+    public string Type { get; set; } = "double";
 
     /// <summary>memory_aob：偏移列表。</summary>
     public List<string> Offsets { get; set; } = new();

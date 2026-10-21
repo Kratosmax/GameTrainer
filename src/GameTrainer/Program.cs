@@ -644,14 +644,136 @@ internal static class Program
     }
 
     /// <summary>
+    /// probe --native &lt;进程名&gt; &lt;当前值&gt; [类型]
+    ///
+    /// 原生进程探测：按值扫描缩小范围，再从候选生成 AOB 候选。
+    /// 只读，不写任何字节。
+    /// </summary>
+    private static int CmdProbeNative(string[] a)
+    {
+        if (a.Length < 4)
+        {
+            Console.Error.WriteLine("用法: probe --native <进程名> <当前值> [double|int32|float|int64|byte|int16]");
+            return 2;
+        }
+
+        string procName = a[2];
+        string rawValue = a[3];
+        string typeName = a.Length > 4 ? a[4] : "double";
+
+        NumType type;
+        switch (typeName.ToLowerInvariant())
+        {
+            case "byte": case "uint8": type = NumType.Byte; break;
+            case "int16": case "short": type = NumType.Int16; break;
+            case "int32": case "int": type = NumType.Int32; break;
+            case "int64": case "long": type = NumType.Int64; break;
+            case "float": type = NumType.Float; break;
+            case "double": type = NumType.Double; break;
+            default:
+                Console.Error.WriteLine($"不支持的类型: {typeName}");
+                return 2;
+        }
+
+        if (!ValueCodec.TryParse(rawValue, type, out object val))
+        {
+            Console.Error.WriteLine($"值 \"{rawValue}\" 无法解析为 {typeName}");
+            return 2;
+        }
+
+        // --next：在上一轮候选基础上过滤（而不是重新首扫）
+        bool isNext = a.Contains("--next");
+        List<ScanHit> hits;
+        string srcDesc;
+
+        if (isNext)
+        {
+            var prev = NativeProbe.LoadCandidates(procName, out NumType ptype, out string at);
+            if (prev.Count == 0)
+            {
+                Console.Error.WriteLine($"没有上一轮候选记录（{NativeProbe.CandidateFile(procName)}）。");
+                Console.Error.WriteLine($"请先执行: probe --native {procName} <当前值> {typeName}");
+                return 2;
+            }
+            Console.WriteLine($"原生探测（过滤）：进程={procName}  值={rawValue}  类型={typeName}");
+            Console.WriteLine($"      上一轮 {prev.Count} 个候选（{at}）");
+            hits = NativeProbe.FilterByValue(procName, prev, val, ptype, out string ferr);
+            if (ferr != null) { Console.Error.WriteLine("[失败] " + ferr); return 1; }
+            srcDesc = $"过滤后 {hits.Count} 个";
+        }
+        else
+        {
+            Console.WriteLine($"原生探测：进程={procName}  值={rawValue}  类型={typeName}");
+            Console.WriteLine("[1/3] 首扫…");
+            hits = NativeProbe.FirstScan(procName, val, type, out string err);
+            if (err != null) { Console.Error.WriteLine("[失败] " + err); return 1; }
+            srcDesc = $"首扫 {hits.Count} 个";
+        }
+
+        // 中间结果落盘，供下一轮 --next 过滤
+        NativeProbe.SaveCandidates(procName, hits, type);
+
+        Console.WriteLine($"      候选 {hits.Count} 个（{srcDesc}）");
+        if (hits.Count == 0) return 1;
+
+        // 候选还多时，引导二次过滤。阈值取 5：
+        // 实测按单值扫描，一个 100 能命中 56 处内存，逐个生成签名毫无意义。
+        if (hits.Count > 5)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"候选仍然较多（{hits.Count} 个）。请继续收窄：");
+            Console.WriteLine($"  1. 回到游戏里改变这个值（买东西、受伤、升级等）");
+            Console.WriteLine($"  2. 执行: probe --native {procName} <改变后的新值> {typeName} --next");
+            Console.WriteLine($"  重复直到候选 <= 5 个。");
+            Console.WriteLine();
+            Console.WriteLine("前 10 个候选：");
+            foreach (var h in hits.Take(10))
+                Console.WriteLine($"  0x{h.Address.ToInt64():X}  [{h.ModuleName}]");
+            return 0;
+        }
+
+        Console.WriteLine("[2/3] 生成 AOB 候选…");
+        int ok = 0;
+        foreach (var h in hits)
+        {
+            var c = NativeProbe.BuildSignature(procName, h.Address, type, out string serr);
+            if (c == null) { Console.WriteLine($"  0x{h.Address.ToInt64():X}  签名生成失败：{serr}"); continue; }
+
+            Console.WriteLine();
+            Console.WriteLine($"  地址 0x{h.Address.ToInt64():X}  值={c.Value}");
+            Console.WriteLine($"  偏移 +0x{c.OffsetFromContext:X}");
+            Console.WriteLine($"  AOB : {c.Aob}");
+            Console.WriteLine($"  唯一: {(c.IsUnique ? "是 ✓" : "否（需加长上下文）")}");
+            if (c.IsUnique) ok++;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"[3/3] 完成：{ok}/{hits.Count} 个候选生成了唯一签名");
+        if (ok > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine("把上面的 aob + offsets 填进适配包的 memory_aob 绑定即可：");
+            Console.WriteLine("  { \"semantic\": \"gold\", \"kind\": \"memory_aob\",");
+            Console.WriteLine("    \"aob\": \"<上面的 AOB>\", \"offsets\": [\"<偏移>\"], \"type\": \"" + typeName + "\" }");
+        }
+        return 0;
+    }
+
+    /// <summary>
     /// probe &lt;port&gt; [--save &lt;gameId&gt; &lt;name&gt; &lt;exe&gt;] [titleFilter]
     /// 对目标游戏执行只读探测，输出报告；带 --save 时落盘为适配包骨架。
     /// </summary>
     private static int CmdProbe(string[] a)
     {
+        // 原生进程模式：probe --native <进程名> <值> [类型]
+        // 没有脚本层时用值扫描定位，再生成 AOB 候选。
+        if (a.Length >= 4 && a[1] == "--native")
+            return CmdProbeNative(a);
+
         if (a.Length < 2 || !int.TryParse(a[1], out int port))
         {
             Console.Error.WriteLine("用法: probe <port> [--game <gameId>] [--save <gameId> <name> <exe>] [titleFilter]");
+            Console.Error.WriteLine("      probe --native <进程名> <当前值> [double|int32|float|int64]");
             return 2;
         }
 
@@ -1315,7 +1437,21 @@ internal static class Program
             ? idOrPath
             : Path.Combine(_skillRoot, "profiles", idOrPath + ".json");
         if (!File.Exists(path))
-            throw new InvalidOperationException($"找不到 profile: {path}");
+        {
+            // 适配包体系上线后，多数游戏只有 adapters/<id>/adapter.json，没有旧 profile。
+            // 直接报「找不到 profile」会让人以为配置丢了，所以显式指向新入口。
+            string adapterPath = Path.Combine(_skillRoot, "adapters", idOrPath, "adapter.json");
+            if (File.Exists(adapterPath))
+                throw new InvalidOperationException(
+                    $"「{idOrPath}」是适配包，不是旧 profile。\n" +
+                    $"请改用：sem {idOrPath} read / sem {idOrPath} write <语义> <值>\n" +
+                    $"（jsapply 仅用于旧的 profiles/*.json 体系）");
+
+            throw new InvalidOperationException(
+                $"找不到 profile 或适配包：{idOrPath}\n" +
+                $"  已查找: {path}\n" +
+                $"  已查找: {adapterPath}");
+        }
         return ProfileLoader.Load(path);
     }
 

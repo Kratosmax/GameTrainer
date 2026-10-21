@@ -24,15 +24,24 @@ internal static class AdapterRunner
     public static Dictionary<string, ReadResult> ReadAll(GameAdapter adapter)
     {
         var map = new Dictionary<string, ReadResult>(StringComparer.OrdinalIgnoreCase);
+
+        // memory_aob 不依赖 CDP：单独走内存后端，其余仍走 Web 路径。
+        var memBindings = adapter.Bindings.Where(b => b.Kind == "memory_aob").ToList();
+        foreach (var b in memBindings)
+            map[b.Semantic] = MemoryBackend.Read(adapter, b);
+
+        var webBindings = adapter.Bindings.Where(b => b.Kind != "memory_aob").ToList();
+        if (webBindings.Count == 0) return map;
+
         if (adapter.Engine != "construct3")
         {
-            foreach (var b in adapter.Bindings)
+            foreach (var b in webBindings)
                 map[b.Semantic] = new ReadResult(b.Semantic, false, null, b.Describe(), $"引擎 {adapter.Engine} 的读取尚未实现");
             return map;
         }
 
-        var instBindings = adapter.Bindings.Where(b => b.Kind == "instance_var").ToList();
-        var idbBindings = adapter.Bindings.Where(b => b.Kind == "indexeddb_key").ToList();
+        var instBindings = webBindings.Where(b => b.Kind == "instance_var").ToList();
+        var idbBindings = webBindings.Where(b => b.Kind == "indexeddb_key").ToList();
 
         using var cdp = CdpClient.Connect(adapter.Connection.DebugPort, adapter.Connection.TitleFilter);
 
@@ -182,9 +191,25 @@ internal static class AdapterRunner
     public static List<ReadResult> Read(GameAdapter adapter, IEnumerable<string> semantics)
     {
         var results = new List<ReadResult>();
+        var wanted = semantics.ToList();
+
+        // memory_aob 单独处理，不要求 CDP 通道
+        var memWanted = new List<string>();
+        foreach (string s in wanted)
+        {
+            var mb = adapter.FindBinding(s);
+            if (mb?.Kind == "memory_aob")
+            {
+                results.Add(MemoryBackend.Read(adapter, mb));
+                memWanted.Add(s);
+            }
+        }
+        wanted = wanted.Except(memWanted).ToList();
+        if (wanted.Count == 0) return results;
+
         if (adapter.Engine != "construct3")
         {
-            foreach (string s in semantics)
+            foreach (string s in wanted)
                 results.Add(new ReadResult(s, false, null, "-", $"引擎 {adapter.Engine} 的读取尚未实现"));
             return results;
         }
@@ -239,6 +264,10 @@ internal static class AdapterRunner
                     results.Add(new ReadResult(sem, false, null, b.Describe(), ex.Message));
                 }
             }
+            else if (b.Kind == "memory_aob")
+            {
+                results.Add(MemoryBackend.Read(adapter, b));
+            }
             else
             {
                 results.Add(new ReadResult(sem, false, null, b.Describe(), $"kind {b.Kind} 暂不支持读取"));
@@ -263,6 +292,10 @@ internal static class AdapterRunner
 
         if (adapter.Mode == "readonly")
             return new WriteResult(semantic, false, null, null, b.Realtime, "适配包处于 readonly 模式，拒绝写入");
+
+        // memory_aob 走内存后端，不依赖 CDP
+        if (b.Kind == "memory_aob")
+            return MemoryBackend.Write(adapter, b, rawValue, dryRun);
 
         if (adapter.Engine != "construct3")
             return new WriteResult(semantic, false, null, null, b.Realtime, $"引擎 {adapter.Engine} 的写入尚未实现");
