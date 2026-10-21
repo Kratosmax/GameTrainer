@@ -585,7 +585,7 @@ inst.SetInstanceVariableValue(idx, VAL);
 | src/UiShot/Program.cs | 同上 |
 | tools/parse-solcesto-save.py | 删除（失败路线遗留，结论不可信且含本机路径） |
 
-复查：`git grep '11726\|LocalLow'` 无命中。
+复查：全仓库搜索本机用户名与存档目录关键字，无命中。
 
 ### 待办
 
