@@ -400,7 +400,12 @@ internal static class Program
     /// </summary>
     private static int ApplyInstanceVar(GameProfile p, PatchDef patch, string rawValue, bool dryRun)
     {
-        string jsVal = patch.ValueType == "string" ? JsonSerializer.Serialize(rawValue) : rawValue;
+        // 与 sem 路径同一条判定：非 string 必须是有限数字，否则拒绝（防命令行注入 JS）
+        if (!JsLiteral.TryPrepare(rawValue, patch.ValueType, out string jsVal))
+        {
+            Console.Error.WriteLine($"[拒绝] 值 \"{rawValue}\" 不是合法数字（patch {patch.Id} valueType={patch.ValueType}）。");
+            return 3;
+        }
         string script = $$"""
 (() => {
   const OBJ = {{JsonSerializer.Serialize(patch.ObjectName)}};
@@ -1163,7 +1168,12 @@ internal static class Program
             return ApplyInstanceVar(p, patch, rawValue, dryRun);
         }
 
-        string jsVal = patch.ValueType == "string" ? JsonSerializer.Serialize(rawValue) : rawValue;
+        // 与 ApplyInstanceVar 同一条判定：防止 jsapply <id> <patch> "1); evil((" 注入
+        if (!JsLiteral.TryPrepare(rawValue, patch.ValueType, out string jsVal))
+        {
+            Console.Error.WriteLine($"[拒绝] 值 \"{rawValue}\" 不是合法数字（patch {patch.Id} valueType={patch.ValueType}）。");
+            return 3;
+        }
         string store = string.IsNullOrWhiteSpace(p.Storage.ObjectStore) ? "keyvaluepairs" : p.Storage.ObjectStore;
 
         string script = $$"""
@@ -1238,7 +1248,12 @@ internal static class Program
             else filter = a[i];
         }
 
-        string jsVal = type == "string" ? JsonSerializer.Serialize(raw) : raw;
+        // type 非 string 即按 number 判定：必须是有限数字，否则拒绝（防命令行注入 JS）
+        if (!JsLiteral.TryPrepare(raw, type, out string jsVal))
+        {
+            Console.Error.WriteLine($"[拒绝] 值 \"{raw}\" 按 type={type} 不是合法数字；要写非数字请加 --type string。");
+            return 3;
+        }
 
         string script = $$"""
 (async () => {
