@@ -28,7 +28,6 @@ internal sealed class GuiForm : Form
     private GameAdapter _adapter;
     private readonly Prefs _prefs = Prefs.Load();
     private readonly Dictionary<string, PersistentWatcher> _watchers = new(StringComparer.OrdinalIgnoreCase);
-    private GameProfile _profile;
     /// <summary>
     /// 旧 profile 写入引擎。DoAttach 删除后已无赋值点，恒为 null——
     /// 所有 `_engine == null` 判断都会走"尚未附加"分支。
@@ -55,10 +54,7 @@ internal sealed class GuiForm : Form
     private readonly Label _profileEmpty = new();
 
     // 内容区
-    private readonly Panel _patchHost = new();
-    private readonly EmptyState _patchEmpty = new();
     private readonly LogView _logBox = new();
-    private readonly CardPanel _patchCard = new();
     private readonly CardPanel _logCard = new();
 
     // 状态栏
@@ -67,9 +63,6 @@ internal sealed class GuiForm : Form
 
 
     private readonly NotifyIcon _tray = new();
-    private readonly Dictionary<string, ToggleSwitch> _toggles = new();
-    private readonly Dictionary<string, PatchRow> _rows = new();
-    private bool _suppress;
     private bool _reallyExit;
     private WindowMaterial.Result _material;
     private Panel _contentGrid;
@@ -454,7 +447,6 @@ internal sealed class GuiForm : Form
         SaveLocator.Invalidate();
 
         _adapter = a;
-        _profile = null;
         UpdateStatusForAdapter(a);
         _topBar?.SetRefreshEnabled(true);
         Log($"已选择适配包：{a.Id}（{a.Bindings.Count} 个数值）");
@@ -564,44 +556,6 @@ internal sealed class GuiForm : Form
         }
         catch { }
         return list;
-    }
-
-    private Control BuildSidebar()
-    {
-        var side = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Tokens.SidebarBack,
-            Padding = new Padding(Tokens.S3, Tokens.S4, Tokens.S3, Tokens.S3),
-            Margin = new Padding(0)
-        };
-
-        var head = new Label
-        {
-            Text = "游戏",
-            Dock = DockStyle.Top,
-            Height = 24,
-            Font = Tokens.FontCaptionStrong,
-            ForeColor = Tokens.TextSecondary,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Margin = new Padding(0)
-        };
-
-        _profileEmpty.Text = "还没有 profile\n在 profiles\\ 下新建 json";
-        _profileEmpty.Dock = DockStyle.Fill;
-        _profileEmpty.TextAlign = ContentAlignment.TopLeft;
-        _profileEmpty.ForeColor = Tokens.TextMuted;
-        _profileEmpty.Font = Tokens.FontCaption;
-        _profileEmpty.Padding = new Padding(Tokens.S1, Tokens.S3, 0, 0);
-
-        _profileList.Dock = DockStyle.Fill;
-        _profileList.Visible = false;
-        _profileList.SelectionChanged += (_, _) => OnProfileSelected();
-
-        side.Controls.Add(_profileList);
-        side.Controls.Add(_profileEmpty);
-        side.Controls.Add(head);
-        return side;
     }
 
     private Control BuildContent()
@@ -1028,10 +982,10 @@ internal sealed class GuiForm : Form
         var menu = new ContextMenuStrip { Font = Tokens.FontBody };
         menu.Items.Add("显示窗口", null, (_, _) => RestoreFromTray());
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("启用全部修改", null, (_, _) => ToggleAll(true));
-        menu.Items.Add("停用全部修改", null, (_, _) => ToggleAll(false));
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("全部回滚并退出", null, (_, _) => { DoRevertAll(); _reallyExit = true; Close(); });
+        // 「启用/停用全部修改」「全部回滚」是旧 profile 模式的功能。
+        // 适配包模式没有"全部启用"这个概念——每个数值独立改、独立撤销，
+        // 那几项菜单留着只会让人以为有全局开关。
+        menu.Items.Add("退出", null, (_, _) => { _reallyExit = true; Close(); });
         _tray.ContextMenuStrip = menu;
     }
 
@@ -1170,21 +1124,9 @@ internal sealed class GuiForm : Form
     {
         _profileList.Clear();
         int adapters = LoadAdapters();
-        int profiles = LoadLegacyProfiles();
 
-        bool has = _profileList.Count > 0;
-        _profileList.Visible = has;
-        _profileEmpty.Visible = !has;
-
-        if (has)
-        {
-            _profileList.Select(0);
-        }
-        else
-        {
-            _profileEmpty.Text = "还没有可用的游戏配置\n用 probe 生成适配包，或在 profiles\\ 放 json";
-            Log($"未找到任何配置（适配包 {adapters} 个，旧 profile {profiles} 个）。");
-        }
+        if (adapters == 0)
+            Log("未找到任何适配包（adapters/ 目录为空）。");
     }
 
     /// <summary>扫描 adapters 目录。</summary>
@@ -1214,76 +1156,6 @@ internal sealed class GuiForm : Form
         }
         return n;
     }
-
-    /// <summary>扫描旧 profiles 目录（兼容）。</summary>
-    private int LoadLegacyProfiles()
-    {
-        string dir = Path.Combine(_skillRoot, "profiles");
-        if (!Directory.Exists(dir)) return 0;
-
-        string[] files = Directory.GetFiles(dir, "*.json");
-        Array.Sort(files, StringComparer.OrdinalIgnoreCase);
-
-        int n = 0;
-        foreach (string f in files)
-        {
-            try
-            {
-                GameProfile p = ProfileLoader.Load(f);
-                _profileList.Add(p.Name, $"{p.Exe} · {p.Patches.Count} 个修改项", p, invalid: false);
-                n++;
-            }
-            catch (Exception ex)
-            {
-                string msg = ex.Message.Split('\n')[0];
-                if (msg.Length > 40) msg = msg[..40] + "…";
-                _profileList.Add(Path.GetFileName(f), "[无效] " + msg, null, invalid: true);
-            }
-        }
-        return n;
-    }
-
-    private void OnProfileSelected()
-    {
-        switch (_profileList.SelectedTag)
-        {
-            case GameAdapter a:
-                StopAllWatchers("切换游戏");
-
-                // 切到另一个游戏时必须清定位缓存。
-                // 缓存里存的是上一个游戏的 Userdata 地址，
-                // 复用它会读到另一个进程的随机内存，表现为"切回来就加载失败"。
-                SaveLocator.Invalidate();
-
-                _adapter = a;
-                _profile = null;
-                UpdateStatusForAdapter(a);
-                _topBar?.SetRefreshEnabled(true);
-                Log($"已选择适配包：{a.Id}（{a.Bindings.Count} 个数值）");
-                _ = RefreshValuesAsync();
-                break;
-
-            case GameProfile p:
-                StopAllWatchers("切换 profile");
-                SaveLocator.Invalidate();
-                _adapter = null;
-                _profile = p;
-                BuildPatchRows();
-                Log($"已选择 profile：{p.Id}（{p.Patches.Count} 个修改项）");
-                break;
-        }
-    }
-
-    /// <summary>集合语义的显示名。适配包没配中文名时用语义名兜底。</summary>
-    private static string CollectionDisplayName(string semantic) => semantic switch
-    {
-        "employee_good" => "员工好感度",
-        "employee_bad" => "员工猥琐值",
-        "employee_medical" => "员工医术",
-        _ => Semantics.Display(semantic)
-    };
-
-    /// <summary>写集合里某个条目的值，成功后刷新整张卡片。</summary>
 
     /// <summary>异步刷新全部数值（合并成 2 次往返，不阻塞 UI）。</summary>
     private bool _refreshing;
@@ -1454,160 +1326,10 @@ internal sealed class GuiForm : Form
             Log($"[持久] 已停止 {_watchers.Count} 个持久监控（{reason}）");
         _watchers.Clear();
     }
-
-    private void BuildPatchRows()
-    {
-        _patchHost.Controls.Clear();
-        _toggles.Clear();
-        _rows.Clear();
-        if (_profile == null) return;
-
-        bool empty = _profile.Patches.Count == 0;
-        _patchEmpty.Visible = empty;
-        _patchHost.Visible = !empty;
-        if (empty)
-        {
-            _patchEmpty.Heading = "这个 profile 还没有修改项";
-            _patchEmpty.Detail = "在 profile json 的 patches 数组里添加后重新加载";
-            return;
-        }
-
-        // 行用 Dock=Top 交给 WinForms 布局：
-        // 手工算 Left/Width 在 AutoScroll 容器里遇到垂直滚动条出现时会算出过宽的行，
-        // 导致最右侧开关被滚动条压住（实测踩过）。Dock 会自动按客户区宽度收缩。
-        // 注意 Dock=Top 的叠加顺序是后加的先占位，所以反向插入。
-        var defs = _profile.Patches;
-        for (int i = defs.Count - 1; i >= 0; i--)
-        {
-            PatchDef patch = defs[i];
-            var row = new PatchRow
-            {
-                Title = string.IsNullOrWhiteSpace(patch.Label) ? patch.Id : patch.Label,
-                Subtitle = DescribePatch(patch),
-                State = _engine == null ? PatchRow.StateKind.Idle : PatchRow.StateKind.Ready,
-                Dock = DockStyle.Top,
-                Height = Tokens.RowHeight
-            };
-
-            var toggle = new ToggleSwitch
-            {
-                Tag = patch.Id,
-                Enabled = false,
-                Dock = DockStyle.Right,
-                Width = 46,
-                Margin = new Padding(0, (Tokens.RowHeight - 24) / 2, Tokens.S2, 0)
-            };
-            toggle.CheckedChanged += (s, _) => OnToggle(patch.Id, ((ToggleSwitch)s!).Checked);
-
-            row.Controls.Add(toggle);
-            _patchHost.Controls.Add(row);
-
-            _toggles[patch.Id] = toggle;
-            _rows[patch.Id] = row;
-        }
-    }
-
-
-    private static string DescribePatch(PatchDef p)
-    {
-        if (p.Kind == "save") return "存档修改 · 需先备份";
-        string lockMode = p.Freeze ? $"持续锁定 {p.FreezeIntervalMs}ms" : "一次性写入";
-        return $"{p.Writes.Count} 处写入 · {lockMode}";
-    }
-
     // DoAttach（旧 profile 附加）已于 2026-10-21 删除：
     // 该方法零调用点，且代码自承「旧 profile 附加模式当前没有 UI 入口」。
     // 适配包体系（sem 命令）已完全覆盖其功能。
     // 若将来恢复旧 profile UI 入口，参考 git 历史重建。
-
-    private void OnToggle(string patchId, bool on)
-    {
-        if (_suppress) return;
-        if (_engine == null) { Log("尚未附加进程。"); return; }
-
-        ApplyResult r;
-        try
-        {
-            r = on ? _engine.Enable(patchId) : _engine.Disable(patchId);
-        }
-        catch (Exception ex)
-        {
-            r = ApplyResult.Fail($"操作异常：{ex.Message}");
-        }
-
-        Log((r.Ok ? "[成功] " : "[失败] ") + r.Message);
-        foreach (string d in r.Details) Log("    " + d);
-
-        if (_rows.TryGetValue(patchId, out PatchRow row))
-        {
-            row.State = r.Ok
-                ? (on ? PatchRow.StateKind.Active : PatchRow.StateKind.Ready)
-                : PatchRow.StateKind.Blocked;
-        }
-
-        if (!r.Ok && _toggles.TryGetValue(patchId, out ToggleSwitch t))
-        {
-            _suppress = true;
-            t.Checked = !on;
-            _suppress = false;
-        }
-    }
-
-    private void ToggleAll(bool on)
-    {
-        if (_engine == null) { Log("尚未附加进程。"); return; }
-
-        int ok = 0, fail = 0;
-        foreach (var kv in _toggles)
-        {
-            if (kv.Value.Checked == on) continue;
-            _suppress = true;
-            kv.Value.Checked = on;
-            _suppress = false;
-            try
-            {
-                ApplyResult r = on ? _engine.Enable(kv.Key) : _engine.Disable(kv.Key);
-                if (r.Ok)
-                {
-                    ok++;
-                    if (_rows.TryGetValue(kv.Key, out PatchRow row))
-                        row.State = on ? PatchRow.StateKind.Active : PatchRow.StateKind.Ready;
-                }
-                else
-                {
-                    fail++;
-                    Log("[失败] " + r.Message);
-                    if (_rows.TryGetValue(kv.Key, out PatchRow row2))
-                        row2.State = PatchRow.StateKind.Blocked;
-                }
-            }
-            catch (Exception ex)
-            {
-                fail++;
-                Log($"[失败] {kv.Key}：{ex.Message}");
-            }
-        }
-        Log($"批量{(on ? "启用" : "停用")}完成：成功 {ok}，失败 {fail}");
-    }
-
-    private void DoRevertAll()
-    {
-        if (_engine == null) return;
-        _engine.StopAllFreezes();
-        int n = _engine.RevertAllPending();
-        _activeStore.ClearAll();
-        Log($"已回滚全部修改：{n} 处");
-
-        foreach (ToggleSwitch t in _toggles.Values)
-        {
-            _suppress = true;
-            t.Checked = false;
-            _suppress = false;
-        }
-        foreach (PatchRow r in _rows.Values)
-            r.State = PatchRow.StateKind.Ready;
-    }
-
     private void RefreshStartupStatus()
     {
         StartupRegistration.Info info = StartupRegistration.Query();
@@ -1698,7 +1420,6 @@ internal sealed class GuiForm : Form
                 return;
             }
 
-            if (r == DialogResult.Yes) DoRevertAll();
         }
 
         PerformExit();
