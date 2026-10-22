@@ -77,8 +77,19 @@ internal static class AdapterRepository
 
     // ---------- 安装 ----------
 
+    /// <summary>某个适配包内容的完整下载地址。</summary>
+    public static string ContentUrlFor(RemoteAdapter remote)
+    {
+        if (remote == null) return "";
+        string rel = string.IsNullOrWhiteSpace(remote.Path)
+            ? $"{remote.Id}/adapter.json"
+            : remote.Path.TrimStart('/');
+        return $"{RawRoot}/{rel}";
+    }
+
     /// <summary>
     /// 下载并安装一个适配包。
+
     ///
     /// 步骤：下载 adapter.json → 校验 SHA256 → 解析验证 → 原子写入。
     /// 任何一步失败都不落盘，避免首页出现一个打不开的条目。
@@ -161,6 +172,29 @@ internal static class AdapterRepository
         }
 
         return (true, null);
+    }
+
+    /// <summary>
+    /// 下载并安装，同时返回实际下载的字节数。
+    /// 界面用它显示"X 字节 / Y ms"，让用户能核对是否真的走了网络。
+    /// </summary>
+    public static async Task<(bool Ok, string Error, int Bytes)> InstallDetailedAsync(
+        string skillRoot, RemoteAdapter remote, NetworkGateway gateway, CancellationToken ct = default)
+    {
+        var (ok, error) = await InstallAsync(skillRoot, remote, gateway, ct);
+
+        int bytes = 0;
+        if (ok)
+        {
+            try
+            {
+                string path = Path.Combine(skillRoot, "adapters", remote.Id, "adapter.json");
+                if (File.Exists(path)) bytes = (int)new FileInfo(path).Length;
+            }
+            catch { }
+        }
+
+        return (ok, error, bytes);
     }
 
     // ---------- 卸载 ----------

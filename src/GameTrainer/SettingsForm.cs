@@ -267,6 +267,14 @@ internal sealed class SettingsForm : Form
         _flow.SuspendLayout();
         _flow.Controls.Clear();
 
+        // 清空内容后必须把滚动位置归零。
+        //
+        // 真 bug：Controls.Clear() 不会重置滚动条位置。
+        // 从一个长分区（如"关于"）切到短分区（如"常规"）时，
+        // 滚动条停在原位置，新页面从中间开始显示——
+        // 用户看到的就是"几个设置页共用一个滚动条，位置还乱跳"。
+        _flow.AutoScrollPosition = new Point(0, 0);
+
         switch (idx)
         {
             case 0: RenderGeneral(); break;
@@ -279,6 +287,10 @@ internal sealed class SettingsForm : Form
         _flow.ResumeLayout();
         RelayoutFlow();
         ResizeChildren();
+
+        // RelayoutFlow 会把 AutoScrollMinSize 设成新内容高度，
+        // 这里再归零一次，确保滚动条真的回到顶部。
+        _flow.AutoScrollPosition = new Point(0, 0);
     }
 
     // ---- 构建辅助：全部走 FlowLayoutPanel，宽度随容器 ----
@@ -539,10 +551,10 @@ internal sealed class SettingsForm : Form
 
         // ---- 窗口行为 ----
         Title("窗口行为");
-        Body("有启用中的修改时关闭窗口 → 询问「回滚并退出」/「直接退出」/「最小化到托盘」");
-        Body("没有启用中的修改 → 直接退出");
-        Wrap("首次最小化到托盘会弹一次气泡提示，之后按你的选择静默处理。"
-           + "真正退出请用托盘菜单「全部回滚并退出」，或关闭时选择回滚。");
+        Body("关闭窗口 → 停止全部持久监控，然后退出");
+        Wrap("适配包模式下的每次修改都是点「应用」时写入的一次性操作，"
+           + "没有「持续生效的补丁」这个概念，因此不存在「回滚」这回事。"
+           + "需要撤销就重新写入原值。");
         // ---- 界面材质 ----
         Title("界面材质");
         Wrap("窗口在 Windows 11 上尝试 DWM Acrylic 全窗材质与系统圆角。"
@@ -694,13 +706,13 @@ internal sealed class SettingsForm : Form
            + "这是硬阻断，界面上没有可以关掉它的开关。");
 
         Gap();
-        Title("回滚的边界");
-        Body("正常退出 / 托盘退出 → 自动回滚", Tokens.Success);
-        Body("游戏进程退出 → 修改随进程消失", Tokens.Success);
-        Body("修改器被强杀或崩溃 → 修改残留在游戏内", Tokens.Warning);
-        Wrap("第三种情况程序无法自动处理。重启后会自动读取激活记录并给出提示，"
-           + "可用 revert <profile> <patch> --by-profile 按 profile 语义补救还原。"
-           + "该命令只在当前值恰好等于本工具写入的值时才还原，避免覆盖你后续的正常进度。");
+        Title("修改的生效范围");
+        Body("写入内存 → 立即生效，游戏重启后恢复原值", Tokens.Success);
+        Body("写入内存 → 只在本次运行有效，不修改存档文件", Tokens.Success);
+        Body("勾选「保持」→ 工具持续补写，退出工具即停止", Tokens.Warning);
+        Wrap("存档文件是加密的，本工具从不直接改存档，"
+           + "所以也不存在「改坏了存档」的风险。"
+           + "游戏进程退出时所有内存修改自然消失。");
     }
 
     // ---- 更新区（关于页最上方） ----

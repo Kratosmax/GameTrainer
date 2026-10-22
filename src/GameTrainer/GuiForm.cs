@@ -35,7 +35,6 @@ internal sealed class GuiForm : Form
     /// 清理需另立议题，不在本次范围。
     /// </summary>
 #pragma warning disable CS0649 // 恒为 null：见上方说明，这是刻意的
-    private PatchEngine _engine;
 #pragma warning restore CS0649
     /// <summary>热键服务（独立模块，见 Services/HotkeyService.cs）。</summary>
     private Services.HotkeyService _hotkeys;
@@ -498,19 +497,26 @@ internal sealed class GuiForm : Form
     /// <summary>下载并安装一个适配包，成功后直接进入该游戏。</summary>
     private async Task DownloadAdapterAsync(AdapterRepository.RemoteAdapter remote)
     {
+        // 下载要有可核对的痕迹：字节数 + 耗时 + 来源地址。
+        // 只写"开始下载/已安装"的话，用户无法判断是真下载还是本地复制——
+        // 本地网络快的时候两者看起来一模一样（实测 10KB 走代理只要 372ms）。
         Log($"[适配包] 开始下载 {remote.Name}…");
+        Log($"[适配包] 来源 {AdapterRepository.ContentUrlFor(remote)}");
 
-        var (ok, error) = await AdapterRepository.InstallAsync(_skillRoot, remote, Gateway);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var (ok, error, bytes) = await AdapterRepository.InstallDetailedAsync(_skillRoot, remote, Gateway);
+        sw.Stop();
+
         if (!ok)
         {
-            Log($"[适配包] 下载失败：{error}");
+            Log($"[适配包] 下载失败（{sw.ElapsedMilliseconds}ms）：{error}");
             MessageBox.Show(this, "下载失败：" + error, "GameTrainer",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
             ShowHomePage();
             return;
         }
 
-        Log($"[适配包] {remote.Name} 已安装");
+        Log($"[适配包] {remote.Name} 已安装：{bytes} 字节，耗时 {sw.ElapsedMilliseconds}ms");
 
         // 重新加载列表并进入该游戏
         LoadProfiles();
@@ -1403,9 +1409,6 @@ internal sealed class GuiForm : Form
         catch (InvalidOperationException) { }
     }
 
-    /// <summary>首次关闭提示"已转到后台"，之后静默。</summary>
-    private static bool _hideHintShown;
-
     private void OnFormClosing(object sender, FormClosingEventArgs e)
     {
         if (_reallyExit)
@@ -1414,29 +1417,19 @@ internal sealed class GuiForm : Form
             return;
         }
 
-        if (_engine != null && _engine.ActivePatches.Count > 0)
-        {
-            DialogResult r = MessageBox.Show(this,
-                "当前仍有启用的修改项。\n\n"
-                + "「是」= 先回滚全部修改，再退出\n"
-                + "「否」= 不回滚直接退出（修改会残留在游戏内）\n"
-                + "「取消」= 留在托盘继续运行，修改保持生效",
-                "GameTrainer", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
-
-            if (r == DialogResult.Cancel)
-            {
-                e.Cancel = true;
-                Hide();
-                WindowState = FormWindowState.Minimized;
-                if (!_hideHintShown)
-                {
-                    _hideHintShown = true;
-                    _tray.ShowBalloonTip(2000, "GameTrainer", "已转到后台，双击托盘图标可恢复窗口。", ToolTipIcon.Info);
-                }
-                return;
-            }
-
-        }
+        // 不再询问"回滚还是直接退出"。
+        //
+        // 原来这里有个 YesNoCancel 对话框，承诺"「是」= 先回滚全部修改再退出"。
+        // 但它依赖 _engine（PatchEngine），而 _engine 在 profile 模式移除后
+        // 永远是 null —— 那段代码从来没执行过，等于界面承诺了不存在的行为。
+        //
+        // 现在的真实语义：
+        //   适配包模式下每个修改都是用户显式点「应用」写进去的一次性写入，
+        //   没有"持续生效的补丁"这个概念，所以没有"回滚"这回事。
+        //   关闭窗口 = 停止持久监控 + 退出。
+        //
+        // 持久监控（勾了"保持"的项）在 PerformExit 里会被停掉，
+        // 这才是真正需要清理的状态。
 
         PerformExit();
     }
@@ -1444,11 +1437,6 @@ internal sealed class GuiForm : Form
     private void PerformExit()
     {
         StopAllWatchers("退出程序");
-        if (_engine != null)
-        {
-            _engine.StopAllFreezes();
-            _engine.RevertAllPending();
-        }
         _hotkeys?.Dispose();
         _tray.Visible = false;
         _tray.Dispose();

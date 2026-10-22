@@ -265,26 +265,33 @@ internal sealed class HomeView : Control
         int colsByWidth = Math.Max(1, (Width - pad * 2 + gap) / (MinCardW + gap));
         int cols = Math.Min(colsByWidth, Math.Max(1, _items.Count));
 
-        int index = 0;
         int rowY = y - (int)_scrollY;
 
+        // 每个分区用独立索引。
+        //
+        // 真 bug：原来两个分区共用 index 连续累加，
+        // 第二个分区的位置从 index 继续取模，
+        // 结果第一张卡被放到第二行的第 N 列，左边空着——
+        // 用户看到的就是"第二行左边没东西，内容跑到右边"。
+        int installedCount = 0;
         foreach (var it in _items.Where(x => x.Installed))
         {
-            LayoutAndPaint(g, it, index++, pad, rowY, cardH, gap, cols);
-            if ((index % cols) == 0) rowY += cardH + gap;
+            LayoutAndPaint(g, it, installedCount++, pad, rowY, cardH, gap, cols);
+            if (installedCount % cols == 0) rowY += cardH + gap;
         }
-        if (index % cols != 0) rowY += cardH + gap;
+        if (installedCount % cols != 0) rowY += cardH + gap;
 
-        // 可下载分区
+        // 可下载分区：索引从 0 重新开始，保证从第一列排起
         var downloadable = _items.Where(x => !x.Installed).ToList();
         if (downloadable.Count > 0)
         {
             rowY = PaintSection(g, pad, rowY, "可下载", downloadable.Count, ignoreScroll: true);
-            int i2 = 0;
+
+            int dlCount = 0;
             foreach (var it in downloadable)
             {
-                LayoutAndPaint(g, it, index++, pad, rowY, cardH, gap, cols);
-                if ((++i2 % cols) == 0) rowY += cardH + gap;
+                LayoutAndPaint(g, it, dlCount++, pad, rowY, cardH, gap, cols);
+                if (dlCount % cols == 0) rowY += cardH + gap;
             }
         }
         else if (!string.IsNullOrEmpty(_remoteError))

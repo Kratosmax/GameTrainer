@@ -134,21 +134,20 @@ internal static class GameLauncher
             appRoot = parent.FullName;
         }
 
-        // c) 常见盘符的 Games 目录下按名字找（只找一层，不做全盘扫描）
-        foreach (string drive in new[] { "C:", "D:", "E:", "F:" })
-        {
-            string games = Path.Combine(drive + "\\", "Games");
-            if (!Directory.Exists(games)) continue;
-            try
-            {
-                foreach (string dir in Directory.GetDirectories(games))
-                {
-                    string p = Path.Combine(dir, adapter.Exe);
-                    if (File.Exists(p)) return p;
-                }
-            }
-            catch { /* 无权访问的目录跳过 */ }
-        }
+        // c) 不再自动扫盘。
+        //
+        // 之前会在 C:/D:/E:/F: 的 Games 目录下按 exe 名字找游戏，
+        // 这等于"未经用户同意就翻他的磁盘"。即便只是读文件名，
+        // 也属于用户不知情的探测行为，不该有。
+        //
+        // 现在只认两个来源：
+        //   1. 适配包里的 installDir（适配包作者明确写的）
+        //   2. 用户自己在设置里指定的路径
+        // 都没有就返回 null，由调用方提示用户去设置。
+
+        string userPath = AdapterInstallPaths.Resolve(adapter.Id);
+        if (!string.IsNullOrWhiteSpace(userPath) && File.Exists(userPath))
+            return userPath;
 
         return null;
     }
