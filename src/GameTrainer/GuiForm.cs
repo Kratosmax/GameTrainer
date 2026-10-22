@@ -38,7 +38,8 @@ internal sealed class GuiForm : Form
 #pragma warning disable CS0649 // 恒为 null：见上方说明，这是刻意的
     private PatchEngine _engine;
 #pragma warning restore CS0649
-    private HotkeyManager _hotkeys;
+    /// <summary>热键服务（独立模块，见 Services/HotkeyService.cs）。</summary>
+    private Services.HotkeyService _hotkeys;
     private readonly ActiveStateStore _activeStore;
     private readonly SingleInstanceGuard _single;
 
@@ -1053,8 +1054,14 @@ internal sealed class GuiForm : Form
     private void InitHotkeys()
     {
         _hotkeys?.Dispose();
-        _hotkeys = new HotkeyManager(Handle);
-        RebuildHotkeys();
+
+        _hotkeys = new Services.HotkeyService(_prefs);
+        _hotkeys.TriggerRequested += TriggerEntryHotkey;
+        _hotkeys.CountChanged += n => _statusBar?.SetHotkeyCount(n);
+        _hotkeys.Logged += Log;
+
+        _hotkeys.Attach(Handle);
+        _hotkeys.Rebuild(_adapter);
     }
 
     /// <summary>
@@ -1089,38 +1096,7 @@ internal sealed class GuiForm : Form
 
     private void RebuildHotkeys()
     {
-        if (_hotkeys == null || _adapter == null) return;
-
-        var items = new List<(string Key, string Spec, Action Action)>();
-
-        foreach (var b in _adapter.Bindings)
-        {
-            var ep = _prefs.ForEntry(_adapter.Id, b.Semantic);
-            if (string.IsNullOrWhiteSpace(ep.Hotkey)) continue;
-
-            string semantic = b.Semantic;
-            items.Add((
-                Prefs.EntryKey(_adapter.Id, semantic),
-                ep.Hotkey,
-                () => TriggerEntryHotkey(semantic)));
-        }
-
-        if (items.Count == 0)
-        {
-            _statusBar?.SetHotkeyCount(0);
-            return;
-        }
-
-        if (_hotkeys.RegisterAll(items, out List<string> errors))
-        {
-            _statusBar?.SetHotkeyCount(items.Count);
-            Log($"[热键] 已注册 {items.Count} 个修改项快捷键");
-        }
-        else
-        {
-            _statusBar?.SetHotkeyCount(0);
-            foreach (string e in errors) Log("[警告] 热键：" + e);
-        }
+        _hotkeys?.Rebuild(_adapter);
     }
 
     /// <summary>
