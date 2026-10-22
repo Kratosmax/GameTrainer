@@ -18,7 +18,16 @@ internal sealed class RoundedField : Panel
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint
                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
-        BackColor = Tokens.SurfaceSunken;
+
+        // 输入框用白色，不是下沉灰。
+        //
+        // 参照 PinNote 的 SettingsPanel：输入框 Background="White"，
+        // 而卡片面是 #FAFCFC（近白）、页面底是 #F4F7F8。
+        // 也就是说输入框比容器"更亮"，靠亮度差表达"这里可以输入"。
+        //
+        // 我原来用 SurfaceSunken（比卡片更暗），视觉上是个凹坑，
+        // 看着像禁用或占位符。方向做反了。
+        BackColor = Tokens.Surface;
         Padding = new Padding(Tokens.S3, 0, Tokens.S3, 0);
     }
 

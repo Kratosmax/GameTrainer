@@ -94,7 +94,7 @@ internal sealed class EntrySettingsDialog : Form
         _hotkeyBox.Dock = DockStyle.Fill;
         _hotkeyBox.ReadOnly = true;
         _hotkeyBox.ShortcutsEnabled = false;
-        _hotkeyBox.BackColor = Tokens.SurfaceSunken;
+        _hotkeyBox.BackColor = Tokens.Surface;   // 输入框白色，见 RoundedField 注释
         _hotkeyBox.ForeColor = Tokens.TextPrimary;
         _hotkeyBox.BorderStyle = BorderStyle.FixedSingle;
         _hotkeyBox.KeyDown += OnHotkeyKeyDown;

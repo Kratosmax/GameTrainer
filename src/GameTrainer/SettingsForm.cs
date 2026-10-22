@@ -317,7 +317,8 @@ internal sealed class SettingsForm : Form
             Text = initial ?? "",
             Font = Tokens.FontBody,
             BorderStyle = BorderStyle.None,
-            BackColor = Tokens.SurfaceSunken,
+            // 与宿主同色：输入框整体是白色面，不做出下沉感
+            BackColor = Tokens.Surface,
             ForeColor = Tokens.TextPrimary,
             Dock = DockStyle.Fill
         };
@@ -441,7 +442,7 @@ internal sealed class SettingsForm : Form
             Font = Tokens.FontMono,
             ReadOnly = true,
             BorderStyle = BorderStyle.None,
-            BackColor = Tokens.SurfaceSunken,
+            BackColor = Tokens.Surface,
             ForeColor = Tokens.TextPrimary,
             Dock = DockStyle.Fill,      // 交给 Dock 布局，不手工设 Left/Width/Top
             ShortcutsEnabled = true
