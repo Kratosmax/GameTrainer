@@ -39,6 +39,32 @@ internal sealed class RoundedField : Panel
         e.Control.LostFocus += (_, _) => { _focused = false; Invalidate(); };
     }
 
+    /// <summary>
+    /// 子控件由容器负责垂直居中。
+    ///
+    /// 原因：单行 TextBox 默认 AutoSize = true，高度被字体锁死在 ~23px。
+    /// 调用方写 Dock = Fill 只能拉宽、拉不高，于是它贴在 38px 高容器的顶部——
+    /// 实测输入框内文字上留白 3px、下留白 18px，视觉上"往上偏 15px"。
+    ///
+    /// 坐标注意：子控件的 (0,0) 是**内边距之后**的客户区原点，
+    /// 所以要减掉 Padding.Top 才是视觉居中；否则调用方已有的上下 Padding
+    /// 会把居中量再推一次（旧代码正是用 Padding 硬凑，见 PathBox）。
+    ///
+    /// 子控件自己的 Dock 会被忽略，这是本容器的既定行为。
+    /// </summary>
+    protected override void OnLayout(LayoutEventArgs e)
+    {
+        base.OnLayout(e);
+
+        foreach (Control c in Controls)
+        {
+            c.Dock = DockStyle.None;
+            c.Left = 0;
+            c.Width = Math.Max(0, ClientSize.Width);
+            c.Top = Math.Max(0, (Height - c.Height) / 2 - Padding.Top);
+        }
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         Graphics g = e.Graphics;

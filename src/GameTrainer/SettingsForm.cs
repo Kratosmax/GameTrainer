@@ -459,10 +459,11 @@ internal sealed class SettingsForm : Form
             Dock = DockStyle.Fill,      // 交给 Dock 布局，不手工设 Left/Width/Top
             ShortcutsEnabled = true
         };
-        // Dock=Fill 会撑满高度；单行 TextBox 文字始终顶部对齐，
-        // 用上下 Padding 把它压到垂直中间。
-        host.Padding = new Padding(Tokens.S3, Math.Max(0, (host.Height - tb.PreferredHeight) / 2),
-                                   Tokens.S3, 0);
+        // 垂直居中由 RoundedField.OnLayout 负责：
+        // 单行 TextBox 的 AutoSize 会把高度锁死，Dock=Fill 只拉宽不拉高，
+        // 曾经的写法是用上下 Padding 硬凑（而现在容器自己会居中，
+        // 再留那份 Padding 会重复补偿，把文字推偏）。
+        host.Padding = new Padding(Tokens.S3, 0, Tokens.S3, 0);
 
         host.Controls.Add(tb);
         AddRow(host);
