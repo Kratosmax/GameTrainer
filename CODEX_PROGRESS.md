@@ -863,3 +863,53 @@ $ GameTrainer.exe update check
 当前版本 1.2.0  通道 lite
 已是最新版本（当前 1.2.0）
 ```
+---
+
+## 用户验收反馈修复（2026-10-22 第二轮）
+
+用户实测 1.2.0 后的反馈与处理：
+
+### 1. 点 Sol Cesto 却打开 Hospital 页面（严重）
+
+根因：`EnterGamePage` 走 `_profileList.SelectTag(adapter)`，
+而 `SelectTag` 用 `ReferenceEquals` 比较 Tag。
+`HomeView` 传进来的是重新加载的 `GameAdapter` 实例，
+与侧栏里那份不是同一对象 → 匹配失败 → `SelectedTag` 停留在上一个游戏。
+
+修法：新增 `SelectAdapter(adapter)` 直接接收对象，绕开侧栏列表。
+侧栏已移除，这层间接本就不需要了。
+
+### 2. 卡片不响应窗口宽度
+
+根因：卡片固定 300px 宽，宽窗口下右侧留大片空白。
+修法：宽度等分填满；列数按 260px 最小可读宽度自适应。
+
+### 3. 「开始使用」按钮无意义
+
+点了没有明确动作（点卡片就是开始）。
+修法：删除，改为右上角数量概览「已安装 N · 可下载 M」。
+
+### 4. 设置页未统一风格
+
+修法：新增 `Shell/SettingsCard`——分组卡片（大圆角 + 阴影 + 组标题 + 组内行）。
+`Title()` 从"塞一个加粗 Label"改为"开启新分组卡片"，
+所有 `Render*` 方法不用改调用方式就获得分组外观。
+
+### 5. 日志展开被重叠
+
+根因：`ToggleLogCollapsed` 只改 `_logCard.Height`，
+没有重排内容区，日志直接盖在修改项上。
+修法：动画每帧调用 `RelayoutGameStack()`（从局部函数提升为类方法）。
+
+### 验证
+
+- `dotnet build`：0 错误 0 警告
+- `dotnet test`：251 通过 0 失败
+- UiShot：设置页分组卡片渲染确认
+
+### 未做：TopBar 抽取
+
+`BuildTopBar` 125 行，5 个按钮字段共 61 处引用。
+抽取需要把这些字段的读写全部改为通过 TopBar 的事件/属性，
+回归面覆盖顶栏所有按钮与更新红点——都是已发布的稳定功能。
+本轮优先修用户报的 5 个实际缺陷，TopBar 留待下一轮。

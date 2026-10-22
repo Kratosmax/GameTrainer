@@ -252,7 +252,11 @@ internal static class Program
                 navType.GetProperty("SelectedIndex")?.SetValue(nav, idx);
 
             Pump(360);
-            results.Add(Capture(dlg, Path.Combine(outDir, "settings-" + sections[idx] + ".png"), dlg.Size));
+            // 诊断：输出设置页所有分组卡片的实际尺寸
+        foreach (Control c in dlg.Controls)
+            DumpCards(c, report);
+
+        results.Add(Capture(dlg, Path.Combine(outDir, "settings-" + sections[idx] + ".png"), dlg.Size));
 
             // 几何落盘：文本框被截断这类问题必须用真实 Bounds 定位，
             // 不能靠"看起来像"猜是宽度还是 Padding 的错。
@@ -410,5 +414,15 @@ internal static class Program
 
         bmp.Save(path, ImageFormat.Png);
         return $"{path}  {size.Width}x{size.Height}";
+    }
+
+    private static void DumpCards(Control parent, System.Text.StringBuilder report)
+    {
+        foreach (Control c in parent.Controls)
+        {
+            if (c.GetType().Name == "SettingsCard")
+                report.AppendLine($"settingsCard {c.AccessibleDescription}");
+            DumpCards(c, report);
+        }
     }
 }

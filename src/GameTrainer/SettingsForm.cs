@@ -31,6 +31,13 @@ internal sealed class SettingsForm : Form
     private readonly Label _barTitle = new();
     private readonly Label _pageSub = new();
 
+    /// <summary>
+    /// 当前正在填充的分组卡片。
+    /// 非 null 时 Title/Body/Wrap/AddRow 都挂到它里面，而不是直接堆到滚动区。
+    /// 这样所有 Render* 方法不用改调用方式，就能获得分组卡片的外观。
+    /// </summary>
+    private Shell.SettingsCard _group;
+
     private static readonly (string Title, string Sub)[] Sections =
     {
         ("常规", "启动行为与窗口关闭方式"),
@@ -206,12 +213,53 @@ internal sealed class SettingsForm : Form
     {
         if (c == null) return;
 
+        // 有分组时挂进分组卡片，否则直接堆到滚动区
+        if (_group != null)
+        {
+            _group.AddRow(c);
+            return;
+        }
+
         c.Left = _flow.Padding.Left;
         c.Top = _flowPaddingCursor;
         c.Width = ContentWidth;
 
         _flow.Controls.Add(c);
         _flowPaddingCursor = c.Bottom + Tokens.S3;
+    }
+
+    /// <summary>
+    /// 开始一个新分组卡片。之前的 Title() 只能做小标题，
+    /// 没有分组边界，整页看起来像一篇文章。
+    /// </summary>
+    private void BeginGroup(string title)
+    {
+        EndGroup();
+
+        _group = new Shell.SettingsCard(title);
+        _flow.Controls.Add(_group);
+    }
+
+    /// <summary>结束当前分组：按内容算高度并登记到滚动区。</summary>
+    private void EndGroup()
+    {
+        if (_group == null) return;
+
+        // 宽度必须在 RelayoutRows 之前设好：
+        // 行高依赖宽度，宽度不对算出来的卡片高度就是错的，
+        // 表现为文字溢出到卡片外面。
+        int w = ContentWidth;
+        _group.Width = w;
+
+        // 先按宽度定高，再定位
+        _group.RelayoutRows();
+
+        _group.Left = _flow.Padding.Left;
+        _group.Top = _flowPaddingCursor;
+
+        // 卡片之间留 S4 呼吸空间：设置页信息密度高，卡片贴太紧会糊成一片
+        _flowPaddingCursor = _group.Bottom + Tokens.S4;
+        _group = null;
     }
 
     /// <summary>下一个块的纵向起点。</summary>
@@ -230,6 +278,13 @@ internal sealed class SettingsForm : Form
             c.Left = _flow.Padding.Left;
             c.Top = y;
             c.Width = ContentWidth;
+
+            // 分组卡片要按新宽度重排内部行，再取高度
+            if (c is Shell.SettingsCard card)
+            {
+                card.RelayoutRows();
+            }
+
             y = c.Bottom + Tokens.S3;
         }
 
@@ -270,7 +325,11 @@ internal sealed class SettingsForm : Form
             default: RenderAbout(); break;
         }
 
+        // 收尾最后一个分组：Render* 里最后一次 Title() 开启的组还没关闭。
+        // 必须在 ResumeLayout 之后——EndGroup 要按 _flow 的实际宽度算卡片高度，
+        // 挂起布局期间宽度可能是 0，算出来的高度全错（内容会溢出卡片）。
         _flow.ResumeLayout();
+        EndGroup();
         RelayoutFlow();
         ResizeChildren();
     }
@@ -280,22 +339,19 @@ internal sealed class SettingsForm : Form
     private int ContentWidth => Math.Max(160,
         _flow.ClientSize.Width - _flow.Padding.Horizontal - 20);
 
+    /// <summary>
+    /// 开启一个分组卡片。
+    ///
+    /// 原来 Title() 只是往滚动区塞一个加粗 Label，没有分组边界，
+    /// 整页看起来像一篇文章。现在它直接成为分组卡片的标题，
+    /// 后续 Body/Wrap/AddRow 都会挂进这一组，直到下一次 Title() 或页面结束。
+    ///
+    /// 返回 null 是刻意的：调用方不需要持有这个控件。
+    /// </summary>
     private Label Title(string text)
     {
-        var l = new Label
-        {
-            Text = text,
-            Font = Tokens.FontSection,
-            ForeColor = Tokens.TextPrimary,
-            AutoSize = false,
-            Height = 30,
-            Width = ContentWidth,
-            Margin = new Padding(0, Tokens.S2, 0, Tokens.S1),
-            TextAlign = ContentAlignment.BottomLeft,
-            Tag = "full"
-        };
-        AddRow(l);
-        return l;
+        BeginGroup(text);
+        return null;
     }
 
     /// <summary>
@@ -429,15 +485,15 @@ internal sealed class SettingsForm : Form
 
     private void RenderGeneral()
     {
-        Title("启动");
+        // ---- 分组：启动 ----
+        BeginGroup("启动");
 
         var row = new Panel
         {
-            Height = 48,
+            Height = 44,
             Width = ContentWidth,
             Margin = new Padding(0),
-            BackColor = Tokens.Surface,
-            Tag = "full"
+            BackColor = Tokens.Surface
         };
 
         var label = new Label
@@ -447,16 +503,17 @@ internal sealed class SettingsForm : Form
             ForeColor = Tokens.TextPrimary,
             AutoSize = false,
             Left = 0,
-            Top = 12,
-            Width = Math.Max(80, ContentWidth - 60),
+            Top = 10,
+            Width = Math.Max(80, ContentWidth - 70),
             Height = 24,
             TextAlign = ContentAlignment.MiddleLeft,
             Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right
         };
 
         _startupToggle.Left = Math.Max(0, ContentWidth - 46);
-        _startupToggle.Top = 12;
+        _startupToggle.Top = 10;
         _startupToggle.Anchor = AnchorStyles.Right | AnchorStyles.Top;
+        _startupToggle.CheckedChanged -= OnStartupToggled;   // 防重复订阅
         _startupToggle.CheckedChanged += OnStartupToggled;
 
         row.Controls.Add(label);
@@ -467,24 +524,27 @@ internal sealed class SettingsForm : Form
         _startupHint.ForeColor = Tokens.TextSecondary;
         _startupHint.AutoSize = false;
         _startupHint.Width = ContentWidth;
-        _startupHint.Height = 42;
-        _startupHint.Margin = new Padding(0, 0, 0, Tokens.S3);
-        _startupHint.Tag = "full";
+        _startupHint.Height = 40;
+        _startupHint.Margin = new Padding(0);
         AddRow(_startupHint);
 
-        Gap();
-        Title("窗口行为");
+        EndGroup();
+
+        // ---- 分组：窗口行为 ----
+        BeginGroup("窗口行为");
         Body("有启用中的修改时关闭窗口 → 询问「回滚并退出」/「直接退出」/「最小化到托盘」");
         Body("没有启用中的修改 → 直接退出");
         Wrap("首次最小化到托盘会弹一次气泡提示，之后按你的选择静默处理。"
            + "真正退出请用托盘菜单「全部回滚并退出」，或关闭时选择回滚。");
+        EndGroup();
 
-        Gap();
-        Title("界面材质");
+        // ---- 分组：界面材质 ----
+        BeginGroup("界面材质");
         Wrap("窗口在 Windows 11 上尝试 DWM Acrylic 全窗材质与系统圆角。"
            + "任一原生调用失败都会整体回退为不透明浅色表面，"
            + "不会留下「标题栏有材质、正文不透明」的混合状态。"
            + "当前系统：" + DescribeMaterial());
+        EndGroup();
     }
 
     private static string DescribeMaterial()

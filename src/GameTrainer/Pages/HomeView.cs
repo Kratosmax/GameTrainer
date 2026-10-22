@@ -40,9 +40,6 @@ internal sealed class HomeView : Control
     }
 
     private readonly List<Item> _items = new();
-    /// <summary>卡片固定宽度。OriginOS 的卡片是定尺网格。</summary>
-    private const int FixedCardW = 300;
-
     private float _pageT;              // 页面进入进度
     private int _hover = -1;
     private int _press = -1;
@@ -250,11 +247,18 @@ internal sealed class HomeView : Control
         y = PaintHeader(g, pad, y);
         y = PaintSection(g, pad, y, "已安装", _items.Count(x => x.Installed));
 
-        // OriginOS 首页是固定尺寸的卡片网格，不是拉伸填充。
-        // 卡片被拉宽会让内容与留白比例失衡（实测 2 张卡各占半屏时非常笨重）。
+        // 卡片网格：列数按可用宽度自适应，卡片宽度等分填满。
+        //
+        // 之前的实现是固定 300px 宽，宽窗口下右侧留大片空白、
+        // 空间利用率很低（用户反馈）。现在改为等分：
+        //   窗口宽 -> 列数多，每列仍等分，不留白
+        //   窗口窄 -> 列数少，卡片自动变窄，不会挤成一条缝
         int cardH = 140;
         int gap = Tokens.S3 * 2;
-        int cols = Math.Max(1, (Width - pad * 2 + gap) / (FixedCardW + gap));
+        // 用最小可读宽度（而不是原固定宽度）算列数：
+        // 卡片窄于 260 时姓名会被省略号吃掉，所以 260 是列数的下限依据。
+        const int MinCardW = 260;
+        int cols = Math.Max(1, (Width - pad * 2 + gap) / (MinCardW + gap));
 
         int index = 0;
         int rowY = y - (int)_scrollY;
@@ -303,10 +307,20 @@ internal sealed class HomeView : Control
             Easing.WithAlpha(Tokens.TextMuted, t),
             new Rectangle(pad, y + 38 + dy, Width - pad * 2 - 200, 22));
 
-        // 主按钮（OriginOS 渐变）
-        var btn = new Rectangle(Width - pad - 132, y + 8 + dy, 132, Tokens.ControlHeight);
-        Draw.FillGradient(g, btn, Tokens.RadiusPill, Tokens.Accent, Tokens.AccentGradEnd);
-        Draw.TextCenter(g, "开始使用", Tokens.FontBodyStrong, Tokens.TextOnAccent, btn);
+        // 右上角不再放"开始使用"按钮。
+        // 它没有明确动作（点卡片就是开始），占着视觉重心反而让人以为要先点它。
+        // 改成在右侧显示数量概览，信息密度更高也更诚实。
+        int installed = _items.Count(x => x.Installed);
+        int available = _items.Count - installed;
+        if (_items.Count > 0)
+        {
+            string summary = available > 0
+                ? $"已安装 {installed} · 可下载 {available}"
+                : $"已安装 {installed}";
+            Draw.TextRight(g, summary, Tokens.FontCaption,
+                Easing.WithAlpha(Tokens.TextMuted, t),
+                new Rectangle(Width - pad - 260, y + 14 + dy, 260, 24));
+        }
 
         return y + 76;
     }
@@ -324,13 +338,22 @@ internal sealed class HomeView : Control
         return y + 34;
     }
 
-    /// <summary>布局单张卡片并绘制。</summary>
+    /// <summary>
+    /// 布局单张卡片并绘制。
+    ///
+    /// 卡片宽度按可用空间等分，而不是固定 300px：
+    /// 固定宽度在宽窗口下会在右侧留下大片空白（实测 1400px 窗口只用到 900px），
+    /// 空间利用率很低。等分后窗口多宽卡片就多宽。
+    /// </summary>
     private void LayoutAndPaint(Graphics g, Item it, int index, int pad, int rowY,
                                 int cardH, int gap, int cols)
     {
         int col = index % cols;
 
-        var rc = new Rectangle(pad + col * (FixedCardW + gap), rowY, FixedCardW, cardH);
+        int avail = Width - pad * 2;
+        int cardW = Math.Max(220, (avail - gap * (cols - 1)) / cols);
+
+        var rc = new Rectangle(pad + col * (cardW + gap), rowY, cardW, cardH);
         it.Bounds = rc;
 
         PaintCard(g, it, rc);

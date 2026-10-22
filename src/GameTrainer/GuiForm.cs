@@ -530,6 +530,8 @@ internal sealed class GuiForm : Form
     /// <summary>进入某个游戏的修改页。</summary>
     private void EnterGamePage(GameAdapter adapter)
     {
+        if (adapter == null) return;
+
         if (_homePage != null) _homePage.Visible = false;
         if (_gameBody != null) _gameBody.Visible = true;
         SetGameChromeVisible(true);
@@ -538,10 +540,40 @@ internal sealed class GuiForm : Form
         _gameTitle.Text = adapter.Name;
         _gameSubtitle.Text = $"{adapter.Engine} · {adapter.Bindings.Count} 个数值";
         SetGameStatePill(GameState.Unknown);
+        _gameView.SetEmpty("正在读取…", "首次读取需要扫描内存，通常 1~3 秒");
 
-        // 走既有的选中路径，保证行为与首页点卡片完全一致
-        _profileList.SelectTag(adapter);
-        OnProfileSelected();
+        // 直接把 adapter 交给业务逻辑，不经过 _profileList.SelectTag。
+        //
+        // 曾经的 bug：SelectTag 用 ReferenceEquals 比较 Tag，
+        // 而 HomeView 传进来的是重新加载出来的 GameAdapter 实例，
+        // 与侧栏里那份不是同一对象，于是匹配失败、SelectedTag 停留在上一个游戏，
+        // 表现为「点 Sol Cesto 却打开 Hospital Rhapsody 的页面」。
+        // 侧栏已移除，这里不再需要那层间接。
+        SelectAdapter(adapter);
+    }
+
+    /// <summary>
+    /// 选中适配包并刷新数值。
+    /// 这是「当前游戏」的唯一入口——首页点卡片、返回后再进入都走这里。
+    /// </summary>
+    private void SelectAdapter(GameAdapter a)
+    {
+        if (a == null) return;
+
+        StopAllWatchers("切换游戏");
+
+        // 切到另一个游戏时必须清定位缓存。
+        // 缓存里存的是上一个游戏的 Userdata 地址，
+        // 复用它会读到另一个进程的随机内存，表现为"切回来就加载失败"。
+        SaveLocator.Invalidate();
+
+        _adapter = a;
+        _profile = null;
+        UpdateStatusForAdapter(a);
+        _refreshBtn.Enabled = true;
+        Log($"已选择适配包：{a.Id}（{a.Bindings.Count} 个数值）");
+
+        _ = RefreshValuesAsync();
     }
 
     /// <summary>游戏运行状态。用于顶部状态胶囊，替代原来两个互相矛盾的徽章。</summary>
@@ -803,24 +835,9 @@ internal sealed class GuiForm : Form
         _logCard.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
         _gameView.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
 
-        void RelayoutStack()
-        {
-            int padL = stack.Padding.Left, padR = stack.Padding.Right;
-            int padT = stack.Padding.Top, padB = stack.Padding.Bottom;
-            int w = stack.ClientSize.Width - padL - padR;
-            int h = stack.ClientSize.Height - padT - padB;
-            if (w <= 0 || h <= 0) return;
-
-            int logH = _logCollapsed ? LogHeaderOnlyHeight : _logCard.Height;
-            int viewH = Math.Max(80, h - logH - Tokens.S3);
-
-            _gameView.SetBounds(padL, padT, w, viewH);
-            _logCard.SetBounds(padL, padT + viewH + Tokens.S3, w, logH);
-        }
-
-        stack.Resize += (_, _) => RelayoutStack();
-        stack.HandleCreated += (_, _) => RelayoutStack();
-        RelayoutStack();
+        stack.Resize += (_, _) => RelayoutGameStack();
+        stack.HandleCreated += (_, _) => RelayoutGameStack();
+        RelayoutGameStack();
 
         _contentGrid = stack;
 
@@ -935,15 +952,20 @@ internal sealed class GuiForm : Form
         _logCard.ActionText = _logCollapsed ? "展开" : "收起";
         _logCard.Invalidate();
 
-        // Dock 布局下只需要改卡片高度：Bottom 会自动从 Fill 区域切走对应高度。
-        // 旧实现要重算两行百分比并调 SetCellPosition，因为那时用的是 TableLayoutPanel。
         int from = _logCollapsed ? LogDrawerHeight : LogHeaderOnlyHeight;
         int to = _logCollapsed ? LogHeaderOnlyHeight : LogDrawerHeight;
 
         Animator.Run(_logCard, "log-drawer", Tokens.AnimSlow, raw =>
         {
             if (_logCard.IsDisposed) return false;
+
             _logCard.Height = Easing.LerpInt(from, to, Easing.EaseInOut(raw));
+
+            // 必须跟着重排：日志高度变了，内容区要相应让出/收回空间。
+            // 原来只改 _logCard.Height 不重排，日志展开后会盖在内容区上，
+            // 表现为"展开日志就看不到修改项了"（用户反馈）。
+            RelayoutGameStack();
+
             return true;
         });
 
@@ -952,6 +974,32 @@ internal sealed class GuiForm : Form
 
     /// <summary>日志收起时只留标题栏的高度。</summary>
     private const int LogHeaderOnlyHeight = 52;
+
+    /// <summary>
+    /// 重排游戏页的上下两段：内容区吃满剩余高度，日志抽屉贴底。
+    ///
+    /// 必须是类方法而不是局部函数：日志展开/收起时高度会变，
+    /// 那一侧也要能调用它重新分配空间，否则日志会盖住内容区。
+    /// </summary>
+    private void RelayoutGameStack()
+    {
+        if (_contentGrid == null || _gameView == null || _logCard == null) return;
+
+        var stack = _contentGrid;
+        if (stack.IsDisposed || stack.ClientSize.Width <= 0) return;
+
+        int padL = stack.Padding.Left, padR = stack.Padding.Right;
+        int padT = stack.Padding.Top, padB = stack.Padding.Bottom;
+        int w = stack.ClientSize.Width - padL - padR;
+        int h = stack.ClientSize.Height - padT - padB;
+        if (w <= 0 || h <= 0) return;
+
+        int logH = _logCollapsed ? LogHeaderOnlyHeight : _logCard.Height;
+        int viewH = Math.Max(80, h - logH - Tokens.S3);
+
+        _gameView.SetBounds(padL, padT, w, viewH);
+        _logCard.SetBounds(padL, padT + viewH + Tokens.S3, w, logH);
+    }
 
 
     private Control BuildStatusBar()
