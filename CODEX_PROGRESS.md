@@ -815,3 +815,51 @@ UiShot 改用 `PrintWindow`（发 WM_PRINT）才能抓到自绘内容。
 - 高 DPI 缩放下的布局
 - 输入框实际键入（键盘转发已接线，但未做真机键入测试）
 - 双击行打开设置对话框
+---
+
+## v1.2.0 发布完成（2026-10-22）
+
+**发布地址**：https://github.com/Kratosmax/GameTrainer/releases/tag/v1.2.0
+
+### 8 个资产已核验
+
+| 资产 | 大小 |
+|---|---|
+| GameTrainer-1.2.0-Full-Setup.exe | 51,189,169 |
+| GameTrainer-1.2.0-Full.zip | 72,390,505 |
+| GameTrainer-1.2.0-Lite-Setup.exe | 2,317,444 |
+| GameTrainer-1.2.0-Lite.zip | 362,648 |
+| update.json | 5,406 |
+| update-lite.json | 5,406 |
+| update-full.json | 5,423 |
+| SHA256SUMS.txt | 722 |
+
+### 关键验证：更新说明不再为空
+
+`update.json` 从 1.1.0 的 875 字节涨到 5,406 字节，
+`releaseNotes` 字段 1,141 字符，内容是完整的 1.2.0 发布说明。
+根因是 `release.ps1` 的 `New-Manifest` 没传 `--notes` 参数。
+
+### 首次发布失败（已修复）
+
+v1.2.0 首次打标签后 CI 在测试环节中止：7 个测试失败。
+根因是这些测试断言 `src\GameTrainer\UI\ValueCard.cs` 的源码文本，
+而该文件在重构中已删除。
+
+**流程教训：打标签前必须本地跑 `dotnet test`。**
+这次是本地只跑了 `dotnet build` 就发布，CI 才发现问题。
+
+修复方式不是删测试，而是把断言对准新实现下的同一契约：
+- `InteractionFeedbackTests`：旧「按钮可点+提示文字」→ 新「输入为空按钮禁用」
+- `ToolTipAttachmentTests` → `LongTextReadabilityTests`：
+  旧「Label 挂 ToolTip」→ 新「统一省略号 + 关键信息独占一行」
+
+结果 251 通过 / 0 失败。
+
+### 发布后核验
+
+```
+$ GameTrainer.exe update check
+当前版本 1.2.0  通道 lite
+已是最新版本（当前 1.2.0）
+```
