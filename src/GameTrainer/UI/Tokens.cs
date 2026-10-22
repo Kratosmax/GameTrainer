@@ -42,14 +42,18 @@ internal static class Tokens
 
     // ==================== 文字 ====================
 
-    /// <summary>正文/标题。对白底 16.4:1。</summary>
+    /// <summary>正文/标题。白底 17.67:1，最坏背景 16.63:1。</summary>
     public static readonly Color TextPrimary = Color.FromArgb(0x14, 0x18, 0x26);
 
-    /// <summary>次要文字。对白底 6.1:1。</summary>
+    /// <summary>次要文字。白底 6.09:1，最坏背景 5.73:1。</summary>
     public static readonly Color TextSecondary = Color.FromArgb(0x5A, 0x62, 0x77);
 
-    /// <summary>弱化文字。对白底 4.5:1，仅用于非关键信息。</summary>
-    public static readonly Color TextMuted = Color.FromArgb(0x86, 0x8E, 0xA1);
+    /// <summary>
+    /// 弱化文字。最坏背景(#F2F4F9) 4.57:1，白底 5.03:1。
+    /// 旧值 #868EA1 实测只有 2.98:1（注释曾误称 4.5:1），
+    /// 用于错误文案时看不清，已加深。
+    /// </summary>
+    public static readonly Color TextMuted = Color.FromArgb(0x68, 0x6F, 0x80);
 
     /// <summary>禁用态。WCAG 豁免禁用组件，但必须视觉可区分。</summary>
     public static readonly Color TextDisabled = Color.FromArgb(0xA8, 0xAF, 0xBD);
@@ -59,7 +63,7 @@ internal static class Tokens
 
     // ==================== 主色（OriginOS 蓝紫）====================
 
-    /// <summary>主色。对白底 5.2:1。</summary>
+    /// <summary>主色。白底 4.88:1，最坏背景 4.58:1。</summary>
     public static readonly Color Accent = Color.FromArgb(0x41, 0x5F, 0xFF);
 
     /// <summary>渐变终点色。主按钮用 主色->此色 的横向渐变。</summary>
@@ -82,7 +86,9 @@ internal static class Tokens
 
     public static readonly Color Success = Color.FromArgb(0x1F, 0xA5, 0x5C);
     public static readonly Color SuccessSoft = Color.FromArgb(0xE6, 0xF7, 0xEE);
-    public static readonly Color Warning = Color.FromArgb(0xE8, 0x8A, 0x00);
+    /// <summary>警告。最坏背景(#F2F4F9) 3.83:1，白底 4.22:1。
+    /// 旧值 #E88A00 实测 2.37:1，作为状态文字/图标看不清，已加深。</summary>
+    public static readonly Color Warning = Color.FromArgb(0xB3, 0x6A, 0x00);
     public static readonly Color WarningSoft = Color.FromArgb(0xFD, 0xF4, 0xE2);
     public static readonly Color Danger = Color.FromArgb(0xE0, 0x3C, 0x4A);
     public static readonly Color DangerSoft = Color.FromArgb(0xFD, 0xEC, 0xEE);
@@ -102,8 +108,12 @@ internal static class Tokens
     /// <summary>输入框等弱边界。</summary>
     public static readonly Color BorderSoft = Color.FromArgb(0xDF, 0xE4, 0xF0);
 
-    /// <summary>交互控件边界。对白底 3.4:1，满足 WCAG 1.4.11。</summary>
-    public static readonly Color BorderControl = Color.FromArgb(0xBF, 0xC7, 0xDA);
+    /// <summary>
+    /// 交互控件边界（输入框、开关轨道）。最坏背景(#F2F4F9) 3.23:1，白底 3.56:1。
+    /// 旧值 #BFC7DA 实测只有 1.54~1.69:1（注释曾误称 3.4:1）——
+    /// 它本身就是"几乎看不见的浅灰"，正是本值要避免的东西。已加深。
+    /// </summary>
+    public static readonly Color BorderControl = Color.FromArgb(0x7E, 0x88, 0x9E);
 
     // ==================== 圆角（OriginOS 大圆角）====================
 
