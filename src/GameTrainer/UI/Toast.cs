@@ -85,7 +85,14 @@ internal sealed class Toast : Control
 
         Size = Measure();
 
-        int x = (Parent.ClientSize.Width - Width) / 2;
+        // 居中要以「可见区」为准，不是 ClientSize：
+        // 容器出现纵向滚动条时，ClientSize.Width 仍含滚动条宽度，
+        // 直接拿它算会让提示整体偏左约半个滚动条。
+        int visibleW = Parent.ClientSize.Width;
+        if (Parent is ScrollableControl sc && sc.VerticalScroll.Visible)
+            visibleW -= SystemInformation.VerticalScrollBarWidth;
+
+        int x = (visibleW - Width) / 2;
         int y = Parent.ClientSize.Height - Height - 24;
 
         // 底部有状态栏时再往上抬一点，别压在状态栏上
