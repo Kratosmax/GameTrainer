@@ -691,52 +691,35 @@ internal sealed class SettingsForm : Form
     /// 但用户仍需要显式指定：企业代理、非标准端口、或想强制直连。
     /// 更新检查与适配包下载共用这一份设置。
     /// </summary>
+    /// <summary>
+    /// 网络设置。
+    ///
+    /// 用 TableLayoutPanel 三列布局，参照 PinNote 的 SettingsPanel：
+    ///   [固定 150px 标签] [弹性内容] [40px 操作]
+    ///
+    /// 之前用固定 Location 硬编码（标签 x=0、下拉 x=96、输入框 x=258），
+    /// 窗口拉宽时全部挤在左边 500px 内，右侧空白——用户反馈"根本拉不开"。
+    /// 表格布局让内容列自动吃掉多余宽度。
+    /// </summary>
     private void RenderNetworkSubsection()
     {
         var netTitle = Body("网络", Tokens.TextPrimary);
         netTitle.Font = Tokens.FontBodyStrong;
         AddRow(netTitle);
 
-        var hint = new Label
-        {
-            Text = "更新检查与适配包下载共用的出网方式。自动会依次尝试环境变量、系统代理与常见本地端口。",
-            Font = Tokens.FontCaption,
-            ForeColor = Tokens.TextMuted,
-            AutoSize = false,
-            Width = ContentWidth,
-            Height = 34,
-            Margin = new Padding(0, 0, 0, Tokens.S2),
-            BackColor = Tokens.Surface
-        };
-        AddRow(hint);
+        // 用 Wrap 而不是固定高度 Label：
+        // 固定 34px 会把两行文字裁成一行半（实测"常见本地端口"被切掉）。
+        Wrap("更新检查与适配包下载共用的出网方式。自动会依次尝试环境变量、系统代理与常见本地端口。");
 
-        var row = new Panel
-        {
-            Width = ContentWidth,
-            Height = 38,
-            Margin = new Padding(0, 0, 0, Tokens.S1),
-            BackColor = Tokens.Surface
-        };
-
-        var modeLabel = new Label
-        {
-            Text = "出网方式",
-            Font = Tokens.FontBody,
-            ForeColor = Tokens.TextPrimary,
-            AutoSize = false,
-            Width = 90,
-            Height = 34,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Location = new Point(0, 0),
-            BackColor = Tokens.Surface
-        };
+        // ---- 出网方式 ----
+        var modeRow = MakeSettingRow("出网方式");
 
         _proxyMode = new ComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
             Font = Tokens.FontBody,
-            Width = 150,
-            Location = new Point(96, 5),
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 2, Tokens.S2, 2),
             BackColor = Tokens.Surface,
             ForeColor = Tokens.TextPrimary
         };
@@ -749,8 +732,8 @@ internal sealed class SettingsForm : Form
 
         _proxyInput = new RoundedField
         {
-            Width = 260,
-            Location = new Point(258, 4),
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 2, 0, 2),
             BackColor = Tokens.Surface
         };
         _proxyInput.Text = _proxyMode.SelectedIndex == 1 ? current : "";
@@ -762,45 +745,108 @@ internal sealed class SettingsForm : Form
             SaveProxySetting();
         };
 
-        row.Controls.Add(modeLabel);
-        row.Controls.Add(_proxyMode);
-        row.Controls.Add(_proxyInput);
-        AddRow(row);
+        // 出网方式行：标签 | 下拉 | 输入框（跨两列用嵌套面板）
+        var modeCell = new Panel { Dock = DockStyle.Fill, BackColor = Tokens.Surface };
+        modeRow.Controls.Add(modeCell, 1, 0);
 
-        var testRow = new Panel
+        var modeInner = new TableLayoutPanel
         {
-            Width = ContentWidth,
-            Height = 38,
-            Margin = new Padding(0, 0, 0, Tokens.S2),
-            BackColor = Tokens.Surface
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            BackColor = Tokens.Surface,
+            Margin = new Padding(0)
         };
+        modeInner.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
+        modeInner.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        modeInner.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        modeInner.Controls.Add(_proxyMode, 0, 0);
+        modeInner.Controls.Add(_proxyInput, 1, 0);
 
+        modeCell.Controls.Add(modeInner);
+        AddRow(modeRow);
+
+        // 保存按钮并进出网方式行的操作列，不再单独占一行。
+        // 之前它孤零零一行、左边空着，看起来像漏了标签。
         var saveBtn = new FlatButton
         {
             Text = "保存",
             Kind = ButtonKind.Secondary,
-            Width = 80,
+            Width = 76,
             Height = 30,
-            Location = new Point(96, 2)
+            Margin = new Padding(0, 2, 0, 2),
+            Anchor = AnchorStyles.Left
         };
         saveBtn.Click += (_, _) => { SaveProxySetting(); };
 
+        // 操作列太窄放不下按钮，改成把按钮塞进内容列右侧的嵌套面板
+        var modeCellReal = modeRow.GetControlFromPosition(1, 0) as Panel;
+        if (modeCellReal != null && modeCellReal.Controls.Count > 0)
+        {
+            var inner = modeCellReal.Controls[0] as TableLayoutPanel;
+            if (inner != null)
+            {
+                inner.ColumnStyles.Clear();
+                inner.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+                inner.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                inner.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 84));
+                inner.ColumnCount = 3;
+
+                inner.Controls.Add(saveBtn, 2, 0);
+            }
+        }
+
+        // 状态提示单独一行（保存结果、错误信息）
         _proxyStatus = new Label
         {
             Text = "",
             Font = Tokens.FontCaption,
             ForeColor = Tokens.TextMuted,
             AutoSize = false,
-            Width = 320,
-            Height = 34,
+            Width = ContentWidth,
+            Height = 22,
             TextAlign = ContentAlignment.MiddleLeft,
-            Location = new Point(186, 0),
+            Margin = new Padding(0, 0, 0, Tokens.S1),
             BackColor = Tokens.Surface
         };
+        AddRow(_proxyStatus);
+    }
 
-        testRow.Controls.Add(saveBtn);
-        testRow.Controls.Add(_proxyStatus);
-        AddRow(testRow);
+    /// <summary>
+    /// 造一个三列设置行：[固定 150px 标签] [弹性内容] [40px 操作]。
+    /// 标签列宽度固定，内容列吃满剩余空间——这是 PinNote 的做法。
+    /// 返回的 TableLayoutPanel 已填好标签，调用方往 (1,0) 放内容。
+    /// </summary>
+    private TableLayoutPanel MakeSettingRow(string labelText)
+    {
+        var row = new TableLayoutPanel
+        {
+            Width = ContentWidth,
+            Height = 40,
+            ColumnCount = 3,
+            RowCount = 1,
+            BackColor = Tokens.Surface,
+            Margin = new Padding(0, 0, 0, Tokens.S2),
+            Tag = "full"
+        };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 40));
+        row.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var label = new Label
+        {
+            Text = labelText,
+            Font = Tokens.FontBody,
+            ForeColor = Tokens.TextPrimary,
+            AutoSize = false,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            BackColor = Tokens.Surface
+        };
+        row.Controls.Add(label, 0, 0);
+
+        return row;
     }
 
     private ComboBox _proxyMode;

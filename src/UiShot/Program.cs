@@ -165,8 +165,25 @@ internal static class Program
             {
                 gui.Show();
                 Pump(200);
+
+                var logCardF0 = guiType.GetField("_logCard",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var lc0 = logCardF0?.GetValue(gui) as Control;
+
+                int h0 = lc0?.Height ?? 0;
                 toggle.Invoke(gui, new object[] { logPad });
-                Pump(900);   // 等 400ms 动画 + 余量
+
+                // 动画中途采样：如果高度没变，说明动画没跑
+                var samples = new List<int>();
+                for (int k = 0; k < 6; k++)
+                {
+                    Pump(70);
+                    samples.Add(lc0?.Height ?? 0);
+                }
+                report.AppendLine($"anim.logDrawer.start={h0} samples={string.Join(",", samples)}");
+                report.AppendLine($"anim.logDrawer.changed={samples.Distinct().Count() > 1}");
+
+                Pump(600);   // 等动画收尾
 
                 var logCardF = guiType.GetField("_logCard",
                     System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);

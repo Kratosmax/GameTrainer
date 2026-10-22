@@ -860,11 +860,16 @@ internal sealed class GuiForm : Form
         int h = stack.ClientSize.Height - padT - padB;
         if (w <= 0 || h <= 0) return;
 
-        // 展开时用 _logDrawerHeight（可被拖动改变），收起时只留标题栏
-        int logH = _logCollapsed ? LogHeaderOnlyHeight : _logDrawerHeight;
+        // 用 _logCard 的当前高度，而不是 _logDrawerHeight。
+        //
+        // 真 bug：这里读 _logDrawerHeight（一个固定值），会在动画每帧
+        // 把动画刚设好的 _logCard.Height 又覆盖回去，
+        // 高度永远不变 —— 表现就是"展开和收起都没有动画"（用户反馈）。
+        // 动画改的是 _logCard.Height，重排就必须读它。
+        int logH = _logCard.Height;
 
-        // 拖动把手夹在内容区与日志之间，收起时不占空间
-        int handleH = _logCollapsed ? 0 : LogResizeHandleHeight;
+        // 拖动把手：收起时高度已很小，不再占额外空间
+        int handleH = logH <= LogHeaderOnlyHeight + 1 ? 0 : LogResizeHandleHeight;
 
         int viewH = Math.Max(80, h - logH - handleH - Tokens.S3);
 

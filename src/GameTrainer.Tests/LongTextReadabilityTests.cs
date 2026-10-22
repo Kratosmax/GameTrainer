@@ -74,8 +74,24 @@ public class LongTextReadabilityTests
     {
         string src = ReadSource(@"src\GameTrainer\Pages\GameView.cs");
 
-        // 输入框要放得下 5 位数字，按钮要放得下"应用"两字
-        Assert.Contains("int inputW = 110", src);
-        Assert.Contains("int btnW = 72", src);
+        // 契约：输入框和按钮必须是固定宽度（不随列宽缩水），
+        // 否则窄列时「应用」两字会被截断。
+        // 不锁死具体像素值——列宽方案调整时数值会变，但契约不变。
+        Assert.Matches(@"int inputW = \d+;", src);
+        Assert.Matches(@"int btnW = \d+;", src);
+
+        // 数值区按实际文字测量，不写死
+        Assert.Contains("Draw.Measure(g, row.Value", src);
+    }
+
+    [Fact]
+    public void 游戏页卡片按多列网格排列()
+    {
+        string src = ReadSource(@"src\GameTrainer\Pages\GameView.cs");
+
+        // 契约：宽窗口下卡片要分列，不能全部竖着堆成一列。
+        // 之前的实现是单列全宽，一张卡横跨整个窗口。
+        Assert.Contains("int cols = Math.Max(1, (avail + gap) / (MinColW + gap));", src);
+        Assert.Contains("colW", src);
     }
 }

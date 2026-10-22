@@ -252,14 +252,43 @@ internal sealed class GameView : Control
         }
 
         int pad = Tokens.S5;
+        int gap = Tokens.S3;
+
+        // 多列网格：列数按可用宽度自适应，卡片等分填满。
+        //
+        // 之前是单列全宽——宽窗口下一张卡横跨 1400px，
+        // 右侧大片空白，空间利用率极低（用户反馈"挤在一起、拉不开"）。
+        //
+        // 最小列宽 420：集合卡片一行要放「名字 + 数值 + 输入框 + 应用」。
+        // 380 时名字会被省略号吃掉（实测"罗伯特·戴维斯"变成"罗伯…"）。
+        const int MinColW = 420;
+        int avail = Width - pad * 2;
+        int cols = Math.Max(1, (avail + gap) / (MinColW + gap));
+        int colW = (avail - gap * (cols - 1)) / cols;
+
+        // 卡片各自按内容定高，只对齐行顶部。
+        //
+        // 之前让整行等高，结果单值卡片（总资产，2 行）被集合卡片（6 行）撑高，
+        // 中间留一大片空白，视觉上很怪。设置卡片高度不同是正常的。
         int y = pad - (int)_scrollY;
 
-        foreach (var b in _blocks)
+        for (int i = 0; i < _blocks.Count; i += cols)
         {
-            int h = MeasureBlock(b);
-            b.Bounds = new Rectangle(pad, y, Width - pad * 2, h);
-            PaintBlock(g, b, b.Bounds);
-            y += h + Tokens.S3;
+            int rowMaxH = 0;
+
+            for (int c = 0; c < cols && i + c < _blocks.Count; c++)
+            {
+                var b = _blocks[i + c];
+                int h = MeasureBlock(b);
+                if (h > rowMaxH) rowMaxH = h;
+
+                int x = pad + c * (colW + gap);
+                b.Bounds = new Rectangle(x, y, colW, h);
+                PaintBlock(g, b, b.Bounds);
+            }
+
+            // 下一行从本行最高的卡片底部开始，避免重叠
+            y += rowMaxH + gap;
         }
     }
 
@@ -339,13 +368,14 @@ internal sealed class GameView : Control
                 Easing.WithAlpha(Tokens.SurfaceHover, row.HoverT * 0.7f));
         }
 
-        // 数值区宽度按实际文字测量，而不是固定值。
-        // 固定 130px 装不下 19pt 的 2,000,070（实测被截成 2000...）。
-        // 用 12pt 单值字体测，给 16px 余量。
-        int inputW = 110;
-        int btnW = 72;
-        int valueW = Math.Max(90,
-            Draw.Measure(g, row.Value ?? "", Tokens.FontValue).Width + Tokens.S4);
+        // 行内四段的宽度分配：名称吃剩余、数值按内容、输入框与按钮固定。
+        //
+        // 之前 inputW=110 在 420px 列里放不下「应用」两字（被截断），
+        // 现在输入框 96、按钮 64，合计 160 + 间距，给名称留足空间。
+        int inputW = 96;
+        int btnW = 64;
+        int valueW = Math.Max(70,
+            Draw.Measure(g, row.Value ?? "", Tokens.FontValue).Width + Tokens.S3);
 
         // 左侧：名称（集合）或标签（单值）
         int nameW = r.Width - inputW - btnW - valueW - Tokens.S3 * 3;
