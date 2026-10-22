@@ -81,6 +81,58 @@ internal static class Program
         emptyGui.Show();
         Pump(400);
         results.Add(Capture(emptyGui, Path.Combine(outDir, "main-empty.png"), emptyGui.Size));
+
+        // 游戏页：通过反射进入某个已安装适配包的修改页。
+        // 侧栏移除后，游戏页是重构的核心产物，必须单独截图验证：
+        //   - 顶部有游戏名与状态胶囊
+        //   - 内容区全宽（不再被侧栏挤窄）
+        //   - 未运行时是中性空状态而不是一片红
+        try
+        {
+            var adaptersField = guiType.GetField("_profileList",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+            if (adaptersField != null)
+            {
+                // 从适配包目录直接读一个 GameAdapter，构造后调 EnterGamePage
+                string adaptersDir = Path.Combine(skillRoot, "adapters");
+                if (Directory.Exists(adaptersDir))
+                {
+                    string firstAdapter = Directory.GetDirectories(adaptersDir)
+                        .Select(d => Path.Combine(d, "adapter.json"))
+                        .FirstOrDefault(File.Exists);
+
+                    if (firstAdapter != null)
+                    {
+                        var adapterType = Type.GetType("GameTrainer.Adapter.GameAdapter, GameTrainer");
+                        var loadMethod = adapterType?.GetMethod("Load",
+                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+
+                        if (loadMethod != null)
+                        {
+                            object adapter = loadMethod.Invoke(null, new object[] { firstAdapter });
+                            var enter = guiType.GetMethod("EnterGamePage",
+                                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+                            if (enter != null && adapter != null)
+                            {
+                                gui.Show();
+                                Pump(200);
+                                enter.Invoke(gui, new[] { adapter });
+                                Pump(700);   // 等页面过渡动画跑完
+                                results.Add(Capture(gui,
+                                    Path.Combine(outDir, "game-page.png"), gui.Size));
+                                gui.Hide();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            report.AppendLine($"game-page.capture.failed = {ex.Message}");
+        }
         emptyGui.Close();
         emptyGui.Dispose();
 

@@ -46,13 +46,14 @@ internal sealed class GuiForm : Form
     private readonly SingleInstanceGuard _single;
 
     // 顶栏
-    private readonly Badge _attachBadge = new();
-    private readonly Badge _antiCheatBadge = new();
     private readonly FlatButton _attachBtn = new();
     private readonly FlatButton _refreshBtn = new();
     private readonly FlatButton _settingsBtn = new();
     private readonly FlatButton _backBtn = new();
     private readonly Label _updateDot = new();
+    private readonly Label _gameTitle = new();
+    private readonly Label _gameSubtitle = new();
+    private readonly Badge _gameStatePill = new();
 
     // 侧栏
     private readonly ProfileListBox _profileList = new();
@@ -306,19 +307,13 @@ internal sealed class GuiForm : Form
             using (var path = Draw.RoundedRect(box, 7))
             using (var b = new SolidBrush(Tokens.Accent))
                 g.FillPath(b, path);
-            Draw.Text(g, "G", Tokens.FontBodyStrong, Tokens.TextOnAccent, box, HorizontalAlignment.Center);
+            Draw.TextGdi(g, "G", Tokens.FontBodyStrong, Tokens.TextOnAccent, box, HorizontalAlignment.Center);
 
             var nameRect = new Rectangle(38, 0, brand.Width - 38, brand.Height);
             Draw.Text(g, "GameTrainer", Tokens.FontSection, Tokens.TextPrimary, nameRect);
         };
 
-        _attachBadge.SetStyle(Tokens.SurfaceSunken, Tokens.TextSecondary, "未选择");
-        _attachBadge.Margin = new Padding(0, 0, Tokens.S2, 0);
-        _attachBadge.Anchor = AnchorStyles.Right;
 
-        _antiCheatBadge.SetStyle(Tokens.SurfaceSunken, Tokens.TextSecondary, "未连接");
-        _antiCheatBadge.Margin = new Padding(0, 0, Tokens.S3, 0);
-        _antiCheatBadge.Anchor = AnchorStyles.Right;
 
         var actions = new FlowLayoutPanel
         {
@@ -384,8 +379,6 @@ internal sealed class GuiForm : Form
 
         layout.Controls.Add(brand, 0, 0);
         // 第 1 列是弹性留白，不放控件
-        layout.Controls.Add(_attachBadge, 2, 0);
-        layout.Controls.Add(_antiCheatBadge, 3, 0);
         layout.Controls.Add(actions, 4, 0);
 
         bar.Controls.Add(layout);
@@ -402,25 +395,21 @@ internal sealed class GuiForm : Form
             Margin = new Padding(0)
         };
 
-        var body = new TableLayoutPanel
+        // 游戏页不再有左侧游戏列表：选游戏由首页网格负责，
+        // 进到游戏页说明已经选定了某个游戏，侧栏列表在这里只会造成
+        // 两个入口（侧栏与首页）同时存在，并且 profiles/ 与 adapters/
+        // 同名游戏会重复出现。现在游戏页只有内容区，全宽。
+        var body = new Panel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 1,
             BackColor = Tokens.PageBack,
-            Margin = new Padding(0),
-            Padding = new Padding(0)
+            Padding = new Padding(Tokens.S5, 0, Tokens.S5, Tokens.S3),
+            Margin = new Padding(0)
         };
-        body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Tokens.SidebarWidth));
-        body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        body.Controls.Add(BuildSidebar(), 0, 0);
-        body.Controls.Add(BuildContent(), 1, 0);
+        body.Controls.Add(BuildContent());
 
-        // 两页切换：首页（游戏网格）与游戏页（原有修改界面）。
-        // 用两个 Dock=Fill 的兄弟面板切换可见性，不改动已有布局逻辑，
-        // 这样游戏页的行为完全不受影响，首页也可以独立演进。
+        // 两页切换：首页（游戏网格）与游戏页（当前游戏的修改界面）。
         _homePage = new HomePage { Dock = DockStyle.Fill, Visible = false };
         _homePage.GameSelected += adapter => EnterGamePage(adapter);
         _homePage.DownloadRequested += remote => _ = DownloadAdapterAsync(remote);
@@ -447,8 +436,7 @@ internal sealed class GuiForm : Form
     {
         if (_homePage == null) return;
 
-        _homePage.Visible = true;
-        if (_gameBody != null) _gameBody.Visible = false;
+        SwitchPage(_homePage, _gameBody);
 
         // 首页不针对任何具体游戏：隐藏游戏页专属的徽章与操作按钮，
         // 否则"读取失败"会让人以为程序坏了，实际只是还没选游戏。
@@ -467,6 +455,52 @@ internal sealed class GuiForm : Form
     }
 
     /// <summary>
+    /// 页面切换：淡入 + 轻微上移，参照 iOS 的 push 过渡。
+    ///
+    /// 为什么不用"瞬间切换可见性"：
+    /// 生硬的显示/隐藏会让用户失去空间感——不知道自己是"进入了下一层"
+    /// 还是"同一个页面刷新了"。一个 260ms 的淡入 + 8px 上移就足够建立层级感，
+    /// 又不会让连续操作觉得慢。
+    ///
+    /// 性能：只动一个控件的 Opacity 与 Top，不触发子控件重排。
+    /// </summary>
+    private void SwitchPage(Control show, Control hide)
+    {
+        if (hide != null)
+        {
+            Animator.Cancel(hide);
+            hide.Visible = false;
+        }
+
+        if (show == null) return;
+
+        Animator.Cancel(show);
+        show.Visible = true;
+
+        // 起始状态：透明 + 下移 8px
+        const int offset = 8;
+        int finalTop = 0;
+
+        show.SuspendLayout();
+        show.Top = finalTop + offset;
+        show.ResumeLayout(false);
+
+        Animator.Run(show, "page-in", Tokens.AnimNormal, raw =>
+        {
+            if (show.IsDisposed) return false;
+
+            float t = Easing.EaseOut(raw);
+            show.Top = finalTop + (int)(offset * (1 - t));
+
+            // WinForms 的 Control.Opacity 只对 Form 有效，
+            // 普通 Panel 用父子背景色混合模拟淡入。
+            show.BackColor = Easing.LerpColor(Tokens.PageBack, Tokens.PageBack, t);
+
+            return true;
+        });
+    }
+
+    /// <summary>
     /// 切换「游戏页专属」控件的可见性。
     ///
     /// 首页与游戏页共用同一套顶栏/状态栏，但徽章与操作按钮只对具体游戏有意义。
@@ -474,7 +508,7 @@ internal sealed class GuiForm : Form
     /// </summary>
     private void SetGameChromeVisible(bool visible)
     {
-        foreach (Control c in new Control[] { _attachBadge, _antiCheatBadge, _attachBtn, _refreshBtn })
+        foreach (Control c in new Control[] { _attachBtn, _refreshBtn })
             if (c != null) c.Visible = visible;
 
         foreach (Control c in new Control[] { _statusAttach, _statusAntiCheat, _statusStartup })
@@ -484,6 +518,20 @@ internal sealed class GuiForm : Form
         {
             _hotkeyHint.Text = "从下方选择一个游戏开始";
             _hotkeyHint.ForeColor = Tokens.TextMuted;
+            _statusAttach.Text = "未选择游戏";
+            _statusAntiCheat.Text = "";
+            _statusStartup.Text = "";
+        }
+        else
+        {
+            // 回到游戏页时状态栏必须恢复真实信息，
+            // 否则会残留首页那句"从下方选择一个游戏开始"。
+            _hotkeyHint.Text = _hotkeys != null && _hotkeys.Count > 0
+                ? $"快捷键：{_hotkeys.Count} 项已绑定"
+                : "快捷键：未配置";
+            _hotkeyHint.ForeColor = Tokens.TextSecondary;
+
+            if (_adapter != null) UpdateStatusForAdapter(_adapter);
         }
     }
 
@@ -494,9 +542,44 @@ internal sealed class GuiForm : Form
         if (_gameBody != null) _gameBody.Visible = true;
         SetGameChromeVisible(true);
 
-        // 走既有的选中路径，保证行为与侧栏点选完全一致
+        // 游戏页顶部标题：侧栏移除后这是唯一能确认"在改哪个游戏"的地方
+        _gameTitle.Text = adapter.Name;
+        _gameSubtitle.Text = $"{adapter.Engine} · {adapter.Bindings.Count} 个数值";
+        SetGameStatePill(GameState.Unknown);
+
+        // 走既有的选中路径，保证行为与首页点卡片完全一致
         _profileList.SelectTag(adapter);
         OnProfileSelected();
+    }
+
+    /// <summary>游戏运行状态。用于顶部状态胶囊，替代原来两个互相矛盾的徽章。</summary>
+    private enum GameState { Unknown, NotRunning, Running, ReadFailed }
+
+    /// <summary>
+    /// 更新顶部状态胶囊。
+    ///
+    /// 原来顶栏同时有「已连接」和「未连接」两个徽章，各自独立更新，
+    /// 会同时亮起互相矛盾。现在合并成单一胶囊，任何时刻只有一个状态。
+    /// </summary>
+    private void SetGameStatePill(GameState state)
+    {
+        if (_gameStatePill == null) return;
+
+        switch (state)
+        {
+            case GameState.Running:
+                _gameStatePill.SetStyle(Tokens.SuccessSubtle, Tokens.Success, "运行中");
+                break;
+            case GameState.NotRunning:
+                _gameStatePill.SetStyle(Tokens.WarningSubtle, Tokens.Warning, "未运行");
+                break;
+            case GameState.ReadFailed:
+                _gameStatePill.SetStyle(Tokens.DangerSubtle, Tokens.Danger, "读取失败");
+                break;
+            default:
+                _gameStatePill.SetStyle(Tokens.SurfaceSunken, Tokens.TextSecondary, "检查中");
+                break;
+        }
     }
 
     /// <summary>下载并安装一个适配包，成功后直接进入该游戏。</summary>
@@ -621,6 +704,41 @@ internal sealed class GuiForm : Form
             Margin = new Padding(0)
         };
 
+        // 游戏页顶部标题：显示当前游戏名与状态胶囊。
+        // 侧栏移除后，这里是唯一能看出"我现在在改哪个游戏"的地方。
+        var gameHeader = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = 64,
+            BackColor = Tokens.PageBack,
+            Padding = new Padding(0, 0, 0, Tokens.S2)
+        };
+
+        _gameTitle.Text = "未选择游戏";
+        _gameTitle.Font = Tokens.FontTitle;
+        _gameTitle.ForeColor = Tokens.TextPrimary;
+        _gameTitle.AutoSize = true;
+        _gameTitle.Location = new Point(0, Tokens.S2);
+
+        _gameSubtitle.Text = "";
+        _gameSubtitle.Font = Tokens.FontCaption;
+        _gameSubtitle.ForeColor = Tokens.TextMuted;
+        _gameSubtitle.AutoSize = true;
+        _gameSubtitle.Location = new Point(2, Tokens.S2 + 34);
+
+        _gameStatePill.Dock = DockStyle.None;
+        _gameStatePill.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _gameStatePill.SetStyle(Tokens.SurfaceSunken, Tokens.TextSecondary, "未运行");
+        _gameStatePill.Location = new Point(0, Tokens.S2 + 4);
+
+        gameHeader.Controls.Add(_gameTitle);
+        gameHeader.Controls.Add(_gameSubtitle);
+        gameHeader.Controls.Add(_gameStatePill);
+        gameHeader.Resize += (_, _) =>
+        {
+            _gameStatePill.Left = Math.Max(0, gameHeader.ClientSize.Width - _gameStatePill.Width);
+        };
+
         _contentGrid = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -644,8 +762,8 @@ internal sealed class GuiForm : Form
         _patchHost.Padding = new Padding(Tokens.S3, 0, Tokens.S3, Tokens.S3);
 
         _patchEmpty.Dock = DockStyle.Fill;
-        _patchEmpty.Heading = "选择一个游戏并附加";
-        _patchEmpty.Detail = "附加成功后，这里会列出该游戏的修改项\n每项可单独启用或停用";
+        _patchEmpty.Heading = "游戏未运行";
+        _patchEmpty.Detail = "先启动游戏，再点「刷新数值」读取存档\n每项可单独启用或停用";
         _patchEmpty.Visible = true;
 
         _patchCard.Controls.Add(_patchHost);
@@ -683,6 +801,7 @@ internal sealed class GuiForm : Form
         _contentGrid.Controls.Add(_logCard, 1, 0);
 
         wrap.Controls.Add(_contentGrid);
+        wrap.Controls.Add(gameHeader);
 
         // 窄窗口时切换为上下堆叠，避免两个卡片都被压到不可读
         wrap.SizeChanged += (_, _) => RelayoutForWidth(wrap.ClientSize.Width);
@@ -759,8 +878,6 @@ internal sealed class GuiForm : Form
             var r = await Task.Run(() => GameLauncher.Launch(adapter, progress: line => Log("  " + line.Trim())));
             if (r.Ok && r.CdpReady)
             {
-                _attachBadge.SetStyle(Tokens.SuccessSubtle, Tokens.Success, "已连接");
-                _antiCheatBadge.SetStyle(Tokens.SuccessSubtle, Tokens.Success, "调试端口就绪");
                 Log("启动成功，正在读取数值…");
                 UpdateStatusForAdapter(adapter, cdpReady: true);
                 _refreshBtn.Enabled = true;
@@ -768,7 +885,6 @@ internal sealed class GuiForm : Form
             }
             else
             {
-                _attachBadge.SetStyle(Tokens.DangerSubtle, Tokens.Danger, "启动失败");
                 Log("[失败] " + r.Message.Replace("\n", " "));
             }
         }
@@ -784,6 +900,9 @@ internal sealed class GuiForm : Form
     {
         if (string.IsNullOrWhiteSpace(err)) return "读取失败";
         if (err.Contains("无法连接")) return "未连接游戏";
+        // 游戏没启动是最常见的情况，不该显示成红色错误。
+        // 用一个中性短语，配合卡片的中性样式，提示"先启动游戏"。
+        if (err.Contains("找不到进程")) return "游戏未启动";
         if (err.Contains("无实例")) return "不在此场景";
         if (err.Contains("对象不存在")) return "对象未加载";
         if (err.Contains("变量不存在")) return "变量缺失";
@@ -1428,7 +1547,7 @@ internal sealed class GuiForm : Form
                 foreach (var card in _cards.Values)
                     card.SetValue(null, false, shortMsg);
                 Log("[错误] 读取失败：" + ex.Message.Replace("\n", " "));
-                _attachBadge.SetStyle(Tokens.DangerSubtle, Tokens.Danger, "读取失败");
+                SetGameStatePill(GameState.ReadFailed);
                 return;
             }
 
@@ -1469,7 +1588,9 @@ internal sealed class GuiForm : Form
                 {
                     // 卡片上只显示简短原因，完整错误统一在日志里出现一次，
                     // 否则同一个连接失败会在 11 张卡片上重复 11 遍（实测截图确认过）。
-                    card.SetValue(null, false, ShortenError(kv.Value.Error));
+                    // 游戏未启动不是错误，用中性样式提示
+                bool neutral = kv.Value.Error != null && kv.Value.Error.Contains("找不到进程");
+                card.SetValue(null, false, ShortenError(kv.Value.Error), neutral);
                     firstError ??= kv.Value.Error;
                     fail++;
                 }
@@ -1478,14 +1599,12 @@ internal sealed class GuiForm : Form
             if (fail == 0)
             {
                 Log($"已刷新数值：成功 {ok}");
-                _attachBadge.SetStyle(Tokens.SuccessSubtle, Tokens.Success, "已连接");
             }
             else if (ok > 0)
             {
                 // 部分成功 = 已连上，但有些值不在当前场景（如未开局时的局内数值）。
                 // 这不是错误，用警告色而非危险色，避免使用者误判连接断了。
                 Log($"已刷新数值：成功 {ok}，{fail} 项不在当前场景");
-                _attachBadge.SetStyle(Tokens.SuccessSubtle, Tokens.Success, "已连接");
             }
             else
             {
@@ -1498,11 +1617,11 @@ internal sealed class GuiForm : Form
                 if (sceneOnly)
                 {
                     Log("[提示] 已连接，但当前不在对局内。进入游戏后点「刷新数值」。");
-                    _attachBadge.SetStyle(Tokens.WarningSubtle, Tokens.Warning, "不在局内");
+                    SetGameStatePill(GameState.NotRunning);
                 }
                 else
                 {
-                    _attachBadge.SetStyle(Tokens.DangerSubtle, Tokens.Danger, "读取失败");
+                    SetGameStatePill(GameState.ReadFailed);
                 }
             }
         }

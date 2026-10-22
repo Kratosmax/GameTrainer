@@ -146,7 +146,7 @@ internal sealed class FlatButton : Button
             g.DrawPath(focusPen, fp);
         }
 
-        Draw.Text(g, Text, Font, ForeColorFor(), rect, HorizontalAlignment.Center);
+        Draw.TextGdi(g, Text, Font, ForeColorFor(), rect, HorizontalAlignment.Center);
     }
 }
 

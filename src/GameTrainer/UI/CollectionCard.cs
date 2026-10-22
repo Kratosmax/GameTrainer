@@ -163,6 +163,53 @@ internal sealed class CollectionCard : Panel
         {
             _rows.ResumeLayout(true);
         }
+
+        AnimateRowsIn();
+    }
+
+    /// <summary>
+    /// 行渐次淡入（staggered fade-in）。
+    ///
+    /// iOS 列表加载时的错峰出现让"数据到齐"这件事有过程感，
+    /// 而不是一坨内容突然砸在屏幕上。这里每行延迟 18ms，总时长不超过 260ms。
+    /// 只改前景色透明度对应的 alpha，不做布局，性能开销可忽略。
+    /// </summary>
+    private void AnimateRowsIn()
+    {
+        var labels = new List<Label>();
+        foreach (Control c in _rows.Controls)
+            if (c is Label l) labels.Add(l);
+
+        if (labels.Count == 0) return;
+
+        Color baseColor = Tokens.TextPrimary;
+        Color mutedColor = Tokens.TextMuted;
+
+        Animator.Run(this, "rows-in", Tokens.AnimNormal + labels.Count * 18, raw =>
+        {
+            if (IsDisposed) return false;
+
+            float total = Tokens.AnimNormal + labels.Count * 18;
+
+            for (int i = 0; i < labels.Count; i++)
+            {
+                // 每行自己的进度窗口
+                float startMs = i * 18f;
+                float local = Math.Clamp((raw * total - startMs) / Tokens.AnimNormal, 0f, 1f);
+                float t = Easing.EaseOut(local);
+
+                var l = labels[i];
+                bool isValue = l.TextAlign == ContentAlignment.MiddleRight;
+                Color from = isValue ? Tokens.Accent : baseColor;
+
+                // 从 30% 不透明渐变到全不透明
+                l.ForeColor = Color.FromArgb(
+                    (int)(30 + 225 * t),
+                    from.R, from.G, from.B);
+            }
+
+            return true;
+        });
     }
 
     /// <summary>

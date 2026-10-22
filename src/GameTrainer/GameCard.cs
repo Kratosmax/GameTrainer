@@ -28,7 +28,41 @@ internal sealed class GameCard : Panel
 
     private Image _icon;
     private string _placeholder = "?";
-    private bool _hover;
+
+    /// <summary>悬停进度 0..1，由 Animator 驱动。</summary>
+    private float _hoverT;
+
+    /// <summary>按下进度 0..1，用于点击时的轻微下沉反馈。</summary>
+    private float _pressT;
+
+    /// <summary>
+    /// 悬停动画。只改一个 float 并重绘，不做布局，
+    /// 所以即使卡片很多也不会掉帧。
+    /// </summary>
+    private void AnimateHover(float target)
+    {
+        float from = _hoverT;
+        Animator.Run(this, "hover", Tokens.AnimFast, raw =>
+        {
+            if (IsDisposed) return false;
+            _hoverT = Easing.Lerp(from, target, Easing.EaseOut(raw));
+            Invalidate();
+            return true;
+        });
+    }
+
+    /// <summary>点击反馈：轻微下沉再回弹，参照 iOS 的 cell 高亮。</summary>
+    private void AnimatePress()
+    {
+        Animator.Run(this, "press", Tokens.AnimFast, raw =>
+        {
+            if (IsDisposed) return false;
+            // 前半程按下，后半程弹回
+            _pressT = raw < 0.5f ? Easing.EaseOut(raw * 2f) : 1f - Easing.EaseOut((raw - 0.5f) * 2f);
+            Invalidate();
+            return true;
+        });
+    }
 
     public GameCard()
     {
@@ -68,12 +102,14 @@ internal sealed class GameCard : Panel
         Controls.Add(_subtitle);
         Controls.Add(_uninstall);
 
-        Click += (_, _) => Clicked?.Invoke();
+        Click += (_, _) => { AnimatePress(); Clicked?.Invoke(); };
         foreach (Control c in new Control[] { _iconBox, _name, _subtitle })
             c.Click += (_, _) => Clicked?.Invoke();
 
-        MouseEnter += (_, _) => { _hover = true; Invalidate(); };
-        MouseLeave += (_, _) => { _hover = false; Invalidate(); };
+        // 悬停用 160ms 缓动，而不是瞬间变色。
+        // iOS 的"顺滑"很大程度来自状态之间都有过渡，没有硬切。
+        MouseEnter += (_, _) => AnimateHover(1f);
+        MouseLeave += (_, _) => AnimateHover(0f);
     }
 
     public string AdapterName
@@ -134,7 +170,7 @@ internal sealed class GameCard : Panel
         }
 
         using var bg = new SolidBrush(Tokens.AccentSubtle);
-        using var path = RoundedRect(new Rectangle(0, 0, _iconBox.Width - 1, _iconBox.Height - 1), 8);
+        using var path = Draw.Round(new Rectangle(0, 0, _iconBox.Width - 1, _iconBox.Height - 1), Tokens.RadiusIcon);
         g.FillPath(bg, path);
 
         using var fg = new SolidBrush(Tokens.Accent);
@@ -154,25 +190,21 @@ internal sealed class GameCard : Panel
         var g = e.Graphics;
         g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
-        // 背景 + 圆角边框：悬停时边框转主色
-        using var bg = new SolidBrush(Tokens.Surface);
-        var rect = new Rectangle(0, 0, Width - 1, Height - 1);
-        using var path = RoundedRect(rect, Tokens.CardRadius);
+        // 按下时整体下沉 1px，营造"被按到"的物理感
+        int sink = (int)Math.Round(_pressT * 1.5f);
+        var rect = new Rectangle(0, sink, Width - 1, Height - 1 - sink);
+
+        using var path = Draw.Round(rect, Tokens.RadiusCard);
+
+        // 悬停时背景从白渐变到极浅的主色，边框同步变主色并加粗。
+        // 全部按 _hoverT 插值，所以过渡是连续的而不是两态跳变。
+        Color bgColor = Easing.LerpColor(Tokens.Surface, Tokens.AccentSubtle, _hoverT * 0.55f);
+        using var bg = new SolidBrush(bgColor);
         g.FillPath(bg, path);
 
-        using var pen = new Pen(_hover ? Tokens.Accent : Tokens.Border, _hover ? 1.6f : 1f);
+        Color borderColor = Easing.LerpColor(Tokens.Border, Tokens.Accent, _hoverT);
+        float borderW = 1f + _hoverT * 0.6f;
+        using var pen = new Pen(borderColor, borderW);
         g.DrawPath(pen, path);
-    }
-
-    private static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle r, int radius)
-    {
-        var p = new System.Drawing.Drawing2D.GraphicsPath();
-        int d = radius * 2;
-        p.AddArc(r.X, r.Y, d, d, 180, 90);
-        p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
-        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
-        p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
-        p.CloseFigure();
-        return p;
     }
 }

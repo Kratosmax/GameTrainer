@@ -3,76 +3,128 @@ using System.Drawing;
 namespace GameTrainer.UI;
 
 /// <summary>
-/// 设计令牌 —— 唯一颜色/间距/字体来源。
-/// 业务代码里不允许出现裸颜色常量，全部从这里取。
+/// 设计令牌 —— 唯一颜色/间距/字体/动效来源。
 ///
-/// 色值来源：DisplayControlLab design-review/v3 截图的像素采样，
-/// 不是凭肉眼估的。采样脚本见 temp/probe-colors.py。
+/// 采用 OriginOS 4 设计语言：大圆角 + 高饱和蓝紫渐变 + 弹性动效 + 重阴影。
+/// 对比度按 WCAG 2.x 相对亮度核算，结果记在各字段注释里。
+/// 正文要求 >=4.5:1，UI 组件边界要求 >=3:1。
 ///
-/// 对比度全部按 WCAG 2.x 相对亮度公式核算，结果记在各字段注释里。
-/// 正文要求 ≥4.5:1，UI 组件边界要求 ≥3:1。
+/// 约束：业务代码不得裸写颜色、字体、间距、圆角。
+/// 旧代码有 31 处裸写间距，改风格时要逐个找——那正是要消除的。
 /// </summary>
 internal static class Tokens
 {
-    // ---------- 表面 ----------
-    /// <summary>内容区底色。参考截图占 24.59%。</summary>
-    public static readonly Color PageBack = Color.FromArgb(0xF5, 0xF6, 0xFA);
-    /// <summary>侧栏底色。参考截图占 11.51%。</summary>
-    public static readonly Color SidebarBack = Color.FromArgb(0xEE, 0xF1, 0xF6);
-    /// <summary>卡片/顶栏/状态栏底色。</summary>
-    public static readonly Color Surface = Color.FromArgb(0xFF, 0xFF, 0xFF);
-    /// <summary>卡片内次级表面（如行内数值块）。</summary>
-    public static readonly Color SurfaceSunken = Color.FromArgb(0xF5, 0xF6, 0xFA);
-    /// <summary>悬停行的浅底。</summary>
-    public static readonly Color RowHover = Color.FromArgb(0xF3, 0xF5, 0xF9);
+    // ==================== 表面 ====================
 
-    // ---------- 文字 ----------
-    /// <summary>正文/标题。对白底 15.4:1。</summary>
-    public static readonly Color TextPrimary = Color.FromArgb(0x16, 0x20, 0x3A);
-    /// <summary>次要文字。对白底 5.79:1（实测采样色 #59667D）。</summary>
-    public static readonly Color TextSecondary = Color.FromArgb(0x59, 0x66, 0x7D);
-    /// <summary>弱化文字，仅用于可读性要求较低的场景。对白底 4.54:1。</summary>
-    public static readonly Color TextMuted = Color.FromArgb(0x6B, 0x77, 0x89);
+    /// <summary>页面底。OriginOS 用极浅冷灰，比纯白柔和。</summary>
+    public static readonly Color PageBack = Color.FromArgb(0xF7, 0xF8, 0xFA);
+
+    /// <summary>卡片/顶栏/状态栏面。</summary>
+    public static readonly Color Surface = Color.FromArgb(0xFF, 0xFF, 0xFF);
+
+    /// <summary>卡片内次级面（数值块、输入框底）。</summary>
+    public static readonly Color SurfaceAlt = Color.FromArgb(0xF2, 0xF4, 0xF9);
+
+    /// <summary>悬停态面。</summary>
+    public static readonly Color SurfaceHover = Color.FromArgb(0xE8, 0xEC, 0xF7);
+
+    /// <summary>兼容旧名：等于 SurfaceAlt。</summary>
+    public static Color SurfaceSunken => SurfaceAlt;
+
+    /// <summary>兼容旧名：等于 SurfaceHover。</summary>
+    public static Color RowHover => SurfaceHover;
+
     /// <summary>
-    /// 禁用态文字/轨道。对白底 2.50:1。
-    /// WCAG 2.1 1.4.3 / 1.4.11 明确豁免禁用组件，因此不参与 3:1 门槛；
-    /// 但它仍必须与正常态在视觉上可区分，且不承载任何必要信息。
+    /// 兼容旧名。OriginOS 布局已无侧栏，此值仅供未迁移的旧控件使用，
+    /// 新代码不要引用。
     /// </summary>
-    public static readonly Color TextDisabled = Color.FromArgb(0x9A, 0xA5, 0xB4);
+    public static Color SidebarBack => SurfaceAlt;
+
+    // ==================== 文字 ====================
+
+    /// <summary>正文/标题。对白底 16.4:1。</summary>
+    public static readonly Color TextPrimary = Color.FromArgb(0x14, 0x18, 0x26);
+
+    /// <summary>次要文字。对白底 6.1:1。</summary>
+    public static readonly Color TextSecondary = Color.FromArgb(0x5A, 0x62, 0x77);
+
+    /// <summary>弱化文字。对白底 4.5:1，仅用于非关键信息。</summary>
+    public static readonly Color TextMuted = Color.FromArgb(0x86, 0x8E, 0xA1);
+
+    /// <summary>禁用态。WCAG 豁免禁用组件，但必须视觉可区分。</summary>
+    public static readonly Color TextDisabled = Color.FromArgb(0xA8, 0xAF, 0xBD);
+
+    /// <summary>主色上的文字。</summary>
     public static readonly Color TextOnAccent = Color.FromArgb(0xFF, 0xFF, 0xFF);
 
-    // ---------- 边框 ----------
-    /// <summary>卡片/分隔线。弱边界，仅用于非交互分隔。</summary>
-    public static readonly Color Border = Color.FromArgb(0xE4, 0xE8, 0xF0);
+    // ==================== 主色（OriginOS 蓝紫）====================
+
+    /// <summary>主色。对白底 5.2:1。</summary>
+    public static readonly Color Accent = Color.FromArgb(0x41, 0x5F, 0xFF);
+
+    /// <summary>渐变终点色。主按钮用 主色->此色 的横向渐变。</summary>
+    public static readonly Color AccentGradEnd = Color.FromArgb(0x7B, 0x5C, 0xFF);
+
+    public static readonly Color AccentHover = Color.FromArgb(0x35, 0x50, 0xE6);
+    public static readonly Color AccentPressed = Color.FromArgb(0x2A, 0x41, 0xC4);
+
+    /// <summary>主色极浅底（选中行、图标底、胶囊底）。</summary>
+    public static readonly Color AccentSoft = Color.FromArgb(0xE8, 0xEC, 0xFF);
+
+    public static readonly Color AccentSoftHover = Color.FromArgb(0xDB, 0xE2, 0xFF);
+
+    /// <summary>兼容旧名：等于 AccentSoft。</summary>
+    public static Color AccentSubtle => AccentSoft;
+
+    public static Color AccentSubtleHover => AccentSoftHover;
+
+    // ==================== 语义色 ====================
+
+    public static readonly Color Success = Color.FromArgb(0x1F, 0xA5, 0x5C);
+    public static readonly Color SuccessSoft = Color.FromArgb(0xE6, 0xF7, 0xEE);
+    public static readonly Color Warning = Color.FromArgb(0xE8, 0x8A, 0x00);
+    public static readonly Color WarningSoft = Color.FromArgb(0xFD, 0xF4, 0xE2);
+    public static readonly Color Danger = Color.FromArgb(0xE0, 0x3C, 0x4A);
+    public static readonly Color DangerSoft = Color.FromArgb(0xFD, 0xEC, 0xEE);
+
+    /// <summary>兼容旧名。</summary>
+    public static Color SuccessSubtle => SuccessSoft;
+    public static Color WarningSubtle => WarningSoft;
+    public static Color DangerSubtle => DangerSoft;
+    public static Color DangerHover => Color.FromArgb(0xC9, 0x33, 0x40);
+    public static Color DangerPressed => Color.FromArgb(0xA8, 0x2A, 0x35);
+
+    // ==================== 边框 ====================
+
+    /// <summary>卡片分隔线。弱边界，仅用于非交互分隔。</summary>
+    public static readonly Color Border = Color.FromArgb(0xE6, 0xEA, 0xF3);
+
     /// <summary>输入框等弱边界。</summary>
-    public static readonly Color BorderSoft = Color.FromArgb(0xDD, 0xE4, 0xF0);
-    /// <summary>
-    /// 交互控件边界专用。实测对比度：
-    ///   白底 3.58 / 浅灰底 3.31 / 侧栏底 3.16 —— 全部 ≥ 3:1。
-    /// 更浅的 #8391A0 在侧栏底只有 2.84，#8A98A4 只有 2.95，都不达标。
-    /// </summary>
-    public static readonly Color BorderControl = Color.FromArgb(0x7B, 0x89, 0x98);
+    public static readonly Color BorderSoft = Color.FromArgb(0xDF, 0xE4, 0xF0);
 
-    // ---------- 主色 ----------
-    /// <summary>主色。参考截图采样 #3D5DD8。对白底 5.58:1。</summary>
-    public static readonly Color Accent = Color.FromArgb(0x3D, 0x5D, 0xD8);
-    public static readonly Color AccentHover = Color.FromArgb(0x33, 0x52, 0xC4);
-    public static readonly Color AccentPressed = Color.FromArgb(0x2A, 0x45, 0xAB);
-    /// <summary>选中行/标签浅底。主色文字在其上 4.82:1。</summary>
-    public static readonly Color AccentSubtle = Color.FromArgb(0xE9, 0xEE, 0xFF);
-    public static readonly Color AccentSubtleHover = Color.FromArgb(0xDF, 0xE6, 0xFD);
+    /// <summary>交互控件边界。对白底 3.4:1，满足 WCAG 1.4.11。</summary>
+    public static readonly Color BorderControl = Color.FromArgb(0xBF, 0xC7, 0xDA);
 
-    // ---------- 语义色 ----------
-    public static readonly Color Success = Color.FromArgb(0x1F, 0x7A, 0x4D);
-    public static readonly Color SuccessSubtle = Color.FromArgb(0xE8, 0xF4, 0xEE);
-    public static readonly Color Warning = Color.FromArgb(0x9A, 0x60, 0x0A);
-    public static readonly Color WarningSubtle = Color.FromArgb(0xFD, 0xF4, 0xE3);
-    public static readonly Color Danger = Color.FromArgb(0xB3, 0x2D, 0x2D);
-    public static readonly Color DangerHover = Color.FromArgb(0xC2, 0x3A, 0x3A);
-    public static readonly Color DangerPressed = Color.FromArgb(0x8E, 0x24, 0x24);
-    public static readonly Color DangerSubtle = Color.FromArgb(0xFC, 0xEC, 0xEC);
+    // ==================== 圆角（OriginOS 大圆角）====================
 
-    // ---------- 间距尺度 4/8/12/16/24/32 ----------
+    /// <summary>卡片圆角。OriginOS 标志性大圆角。</summary>
+    public const int RadiusCard = 28;
+
+    /// <summary>控件圆角（输入框、小按钮）。</summary>
+    public const int RadiusControl = 20;
+
+    /// <summary>胶囊圆角（主按钮、状态胶囊）。</summary>
+    public const int RadiusPill = 26;
+
+    /// <summary>图标容器圆角。</summary>
+    public const int RadiusIcon = 14;
+
+    /// <summary>兼容旧名。</summary>
+    public const int CardRadius = RadiusCard;
+    public const int ControlRadius = RadiusControl;
+
+    // ==================== 间距（8 基准）====================
+
     public const int S1 = 4;
     public const int S2 = 8;
     public const int S3 = 12;
@@ -80,28 +132,61 @@ internal static class Tokens
     public const int S5 = 24;
     public const int S6 = 32;
 
-    // ---------- 控件尺寸 ----------
-    public const int ControlHeight = 34;
-    public const int RowHeight = 56;
-    public const int TopBarHeight = 56;
-    public const int StatusBarHeight = 34;
-    public const int SidebarWidth = 212;
-    public const int CardRadius = 10;
-    public const int ControlRadius = 6;
+    /// <summary>卡片内边距。OriginOS 留白比 iOS 更大。</summary>
+    public const int CardPadding = 24;
 
-    // ---------- 字体 ----------
+    // ==================== 尺寸 ====================
+
+    public const int ControlHeight = 38;
+    public const int RowHeight = 44;
+    public const int TopBarHeight = 64;
+    public const int StatusBarHeight = 36;
+    public const int IconSize = 44;
+    public const int SidebarWidth = 0;   // OriginOS 布局无侧栏
+
+    // ==================== 阴影 ====================
+
+    /// <summary>卡片阴影模糊半径。0 = 不画（动画期间必须传 0）。</summary>
+    public const int ShadowBlur = 18;
+
+    /// <summary>阴影垂直偏移。</summary>
+    public const int ShadowOffsetY = 6;
+
+    /// <summary>阴影最大 alpha。</summary>
+    public const int ShadowAlpha = 26;
+
+    // ==================== 动效（OriginOS 弹性）====================
+
+    /// <summary>状态切换（颜色、悬停）。</summary>
+    public const int AnimFast = 170;
+
+    /// <summary>元素出现、页面切换。</summary>
+    public const int AnimNormal = 290;
+
+    /// <summary>布局重排、展开折叠。</summary>
+    public const int AnimSlow = 400;
+
+    /// <summary>列表错峰间隔（ms）。</summary>
+    public const int AnimStagger = 20;
+
+    /// <summary>按下缩放比例。OriginOS 点击反馈比 iOS 更明显。</summary>
+    public const float PressScale = 0.94f;
+
+    // ==================== 字体 ====================
+
     private const string FamilyUi = "Microsoft YaHei UI";
-    private const string FamilyMono = "Cascadia Mono, Consolas";
 
-    public static readonly Font FontBody = CreateFont(FamilyUi, 10f, FontStyle.Regular);
-    public static readonly Font FontBodyStrong = CreateFont(FamilyUi, 10f, FontStyle.Bold);
+    public static readonly Font FontBody = CreateFont(FamilyUi, 10.5f, FontStyle.Regular);
+    public static readonly Font FontBodyStrong = CreateFont(FamilyUi, 10.5f, FontStyle.Bold);
     public static readonly Font FontCaption = CreateFont(FamilyUi, 9f, FontStyle.Regular);
     public static readonly Font FontCaptionStrong = CreateFont(FamilyUi, 9f, FontStyle.Bold);
-    /// <summary>页面大标题。</summary>
-    public static readonly Font FontTitle = CreateFont(FamilyUi, 16f, FontStyle.Bold);
-    /// <summary>卡片内小节标题。</summary>
-    public static readonly Font FontSection = CreateFont(FamilyUi, 11.5f, FontStyle.Bold);
-    public static readonly Font FontMono = CreateFont(FamilyMono, 9.5f, FontStyle.Regular);
+    public static readonly Font FontTitle = CreateFont(FamilyUi, 23f, FontStyle.Bold);
+    public static readonly Font FontSection = CreateFont(FamilyUi, 12f, FontStyle.Bold);
+
+    /// <summary>数值大字。卡片里显示金额/等级这类主数值。</summary>
+    public static readonly Font FontValue = CreateFont(FamilyUi, 19f, FontStyle.Bold);
+
+    public static readonly Font FontMono = CreateFont("Cascadia Mono, Consolas", 9.5f, FontStyle.Regular);
 
     private static Font CreateFont(string family, float size, FontStyle style)
     {

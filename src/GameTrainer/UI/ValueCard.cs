@@ -330,7 +330,14 @@ internal sealed class ValueCard : Panel
     }
 
     /// <summary>设置当前值。成功时更新显示，失败时显示错误。</summary>
-    public void SetValue(string raw, bool ok, string error = null)
+    /// <summary>
+    /// 设置卡片显示。
+    /// </summary>
+    /// <param name="neutral">
+    /// true 表示这不是"出错"，只是当前条件不满足（如游戏没启动）。
+    /// 用灰色而非橙色：橙/红会让整屏看起来像崩了，而用户只是还没开游戏。
+    /// </param>
+    public void SetValue(string raw, bool ok, string error = null, bool neutral = false)
     {
         _busy = true;
         try
@@ -344,7 +351,7 @@ internal sealed class ValueCard : Panel
                 _value.ForeColor = Tokens.TextDisabled;
                 _hasValue = false;
                 _hint.Text = error ?? "无法读取";
-                _hint.ForeColor = Tokens.Warning;
+                _hint.ForeColor = neutral ? Tokens.TextMuted : Tokens.Warning;
                 SetControlsEnabled(false);
                 return;
             }

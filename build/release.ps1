@@ -132,10 +132,16 @@ $hasKey = -not [string]::IsNullOrWhiteSpace($PrivateKeyPath) -and (Test-Path $Pr
 function New-Manifest {
     param([string]$Channel, [string]$Package, [string]$FileName)
     $out = Join-Path $releaseRoot $FileName
-    # 必须捕获工具 stdout：不捕获的话它会混进函数返回值，
-    # 让 $liteJson 变成"已生成 F:..."这种字符串，后续 Copy-Item 直接报错（已踩）
-    $toolOut = & $toolExe sign --channel $Channel --version $version `
-        --package $Package --output $out --key $PrivateKeyPath 2>&1
+    # Capture tool stdout: otherwise it pollutes the function return value
+    # and $liteJson becomes a string like "generated F:...", breaking Copy-Item.
+    # --notes is required: without it releaseNotes is empty and the client
+    # update dialog shows "no release notes provided".
+    $signArgs = @(
+        "sign", "--channel", $Channel, "--version", $version,
+        "--package", $Package, "--output", $out, "--key", $PrivateKeyPath
+    )
+    if ($script:releaseNotesPath) { $signArgs += @("--notes", $script:releaseNotesPath) }
+    $toolOut = & $toolExe @signArgs 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host ($toolOut | Out-String)
         throw "清单生成失败（$Channel）"
@@ -146,6 +152,13 @@ function New-Manifest {
 }
 
 if ($hasKey) {
+    # Release notes file: current version only, used for manifest releaseNotes
+    $script:releaseNotesPath = Join-Path $repoRoot "RELEASE_NOTES_CURRENT.md"
+    if (-not (Test-Path $script:releaseNotesPath)) {
+        $script:releaseNotesPath = $null
+        Write-Host "  [warn] RELEASE_NOTES_CURRENT.md missing; manifest will omit notes"
+    }
+
     $liteJson = New-Manifest -Channel "lite" -Package $liteZip -FileName "update-lite.json"
     $fullJson = New-Manifest -Channel "full" -Package $fullZip -FileName "update-full.json"
     # 兼容清单：老版本只认 update.json，指向 Lite

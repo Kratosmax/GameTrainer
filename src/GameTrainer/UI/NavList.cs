@@ -220,7 +220,7 @@ internal sealed class SegmentedTabs : Control
                 g.FillPath(b, path);
             }
 
-            Draw.Text(g, _items[i],
+            Draw.TextGdi(g, _items[i],
                 sel ? Tokens.FontBodyStrong : Tokens.FontBody,
                 sel ? Tokens.Accent : Tokens.TextSecondary,
                 cell, HorizontalAlignment.Center);
@@ -304,7 +304,7 @@ internal sealed class CardPanel : Panel
             if (!string.IsNullOrEmpty(ActionText))
             {
                 var actRect = new Rectangle(Width - Tokens.S5 - 160, 0, 160, HeaderHeight);
-                Draw.Text(g, ActionText, Tokens.FontCaption, Tokens.Accent, actRect, HorizontalAlignment.Right);
+                Draw.TextGdi(g, ActionText, Tokens.FontCaption, Tokens.Accent, actRect, HorizontalAlignment.Right);
             }
         }
     }
@@ -335,7 +335,10 @@ internal sealed class Badge : Control
         _fore = fore;
         Text = text;
         AccessibleName = text;   // 自绘控件的 UIA 需要显式设置
-        int w = Draw.Measure(text, Font).Width + Tokens.S3 * 2;
+        // 无 Graphics 上下文时用 TextRenderer 直接度量（与 TextGdi 同源，度量一致）
+        int w = TextRenderer.MeasureText(text, Font,
+            new Size(int.MaxValue, int.MaxValue),
+            TextFormatFlags.SingleLine | TextFormatFlags.NoPadding).Width + Tokens.S3 * 2;
         Width = Math.Max(48, w);
         Invalidate();
     }
@@ -351,6 +354,6 @@ internal sealed class Badge : Control
         using var b = new SolidBrush(_back);
         g.FillPath(b, path);
 
-        Draw.Text(g, Text, Font, _fore, rect, HorizontalAlignment.Center);
+        Draw.TextGdi(g, Text, Font, _fore, rect, HorizontalAlignment.Center);
     }
 }

@@ -505,39 +505,121 @@ internal static class CollectionBackend
 
     /// <summary>
     /// 读名字索引对应的显示名。
-    /// 名字表地址失效时返回 null，调用方回退显示 #ID。
+    ///
+    /// 名字表地址不写死在适配包里——那是 Unity IL2CPP 的托管对象，
+    /// 每次启动游戏地址都会变（实测重启后旧地址读到的全是垃圾，
+    /// 表现就是员工姓名全变成 #ID）。
+    /// 改为现场扫描：找所有「entry 步长 0x18、key 是 1000~1300 的小整数、
+    /// value 是合法 UTF-16 字符串」的字典，取命中最多且能解出中文/日文名字的那个。
+    ///
+    /// 定位结果按进程缓存：同一次运行内不重复扫描。
     /// </summary>
     public static string ResolveName(IntPtr h, int nameIndex, NameTable nt)
     {
-        if (nt == null || nt.EntriesAddress == 0) return null;
+        if (nt == null) return null;
 
         if (_nameCache == null)
         {
-            _nameCache = new Dictionary<int, string>();
+            long entries = nt.EntriesAddress;
 
-            for (int i = 0; i < nt.ScanCount; i++)
+            // 适配包给了地址先试一次；失败或结果太少就动态扫描
+            if (entries != 0)
             {
-                byte[] e = Read(h, nt.EntriesAddress + i * nt.EntryStride, (int)nt.EntryStride);
-                if (e == null) continue;
-
-                int key = I32(e, (int)nt.KeyOffset);
-                long val = I64(e, (int)nt.ValueOffset);
-                if (!LooksLikePointer(val)) continue;
-
-                byte[] s = Read(h, val, 0x40);
-                if (s == null) continue;
-
-                // IL2CPP String 对象：+0x10 是长度（字符数），+0x14 起是 UTF-16 数据
-                int len = I32(s, 0x10);
-                if (len < 1 || len > 16) continue;
-
-                string text = System.Text.Encoding.Unicode.GetString(s, 0x14, len * 2);
-                if (!string.IsNullOrWhiteSpace(text) && !_nameCache.ContainsKey(key))
-                    _nameCache[key] = text;
+                var probe = ScanNameTable(h, entries, nt);
+                if (probe.Count >= 5) _nameCache = probe;
             }
+
+            if (_nameCache == null || _nameCache.Count < 5)
+                _nameCache = LocateNameTable(h, nt);
         }
 
-        return _nameCache.TryGetValue(nameIndex, out var name) ? name : null;
+        return _nameCache != null && _nameCache.TryGetValue(nameIndex, out var name) ? name : null;
+    }
+
+    /// <summary>
+    /// 动态定位名字表。
+    ///
+    /// 判据（全部来自实测）：
+    ///   - entry 步长 0x18，key 在 +0x08、value 指针在 +0x10
+    ///   - key 是 1000~1300 之间的整数（ename 编号范围）
+    ///   - value 指向 IL2CPP String：+0x10 是长度（1~16），+0x14 起是 UTF-16
+    ///   - 解出的文本非空、不含控制字符
+    /// 命中条数最多且 ≥5 的那个就是真表，内存里其它相似结构解不出这么多合法名字。
+    /// </summary>
+    private static Dictionary<int, string> LocateNameTable(IntPtr h, NameTable nt)
+    {
+        Dictionary<int, string> best = null;
+        int bestCount = 0;
+
+        ScanReadable(h, (baseA, buf, n) =>
+        {
+            // 以 8 字节对齐扫候选 entries 起点
+            for (int i = 0; i + 0x18 <= n; i += 8)
+            {
+                // 先快速验证前 3 个 entry 是否符合名字表特征
+                int quick = 0;
+                for (int k = 0; k < 3; k++)
+                {
+                    int off = i + k * 0x18;
+                    if (off + 0x18 > n) break;
+                    int key = I32(buf, off + 0x08);
+                    if (key < 1000 || key > 1300) break;
+                    quick++;
+                }
+                if (quick < 3) continue;
+
+                var map = ScanNameTable(h, baseA + i, nt, limit: 300);
+                if (map.Count > bestCount)
+                {
+                    bestCount = map.Count;
+                    best = map;
+                }
+            }
+        });
+
+        return bestCount >= 5 ? best : null;
+    }
+
+    /// <summary>
+    /// 从给定 entries 起点读名字表。
+    /// limit 控制最多扫多少条，避免把大块无关内存读穿。
+    /// </summary>
+    private static Dictionary<int, string> ScanNameTable(IntPtr h, long entries, NameTable nt, int limit = 500)
+    {
+        var map = new Dictionary<int, string>();
+
+        for (int i = 0; i < limit; i++)
+        {
+            byte[] e = Read(h, entries + i * nt.EntryStride, (int)nt.EntryStride);
+            if (e == null) break;
+
+            int key = I32(e, (int)nt.KeyOffset);
+            if (key < 1 || key > 999999) continue;
+
+            long val = I64(e, (int)nt.ValueOffset);
+            if (!LooksLikePointer(val)) continue;
+
+            byte[] s = Read(h, val, 0x40);
+            if (s == null) continue;
+
+            int len = I32(s, 0x10);
+            if (len < 1 || len > 16) continue;
+
+            string text = System.Text.Encoding.Unicode.GetString(s, 0x14, len * 2);
+            if (string.IsNullOrWhiteSpace(text)) continue;
+
+            // 排除控制字符与全角异常，保留中日英文字符
+            bool ok = true;
+            foreach (char ch in text)
+            {
+                if (ch < 0x20 || ch == 0xFFFD) { ok = false; break; }
+            }
+            if (!ok) continue;
+
+            if (!map.ContainsKey(key)) map[key] = text;
+        }
+
+        return map;
     }
 
     /// <summary>读条目上某个偏移的 int32。</summary>

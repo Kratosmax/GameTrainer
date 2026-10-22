@@ -169,12 +169,12 @@ internal sealed class EmptyState : Control
             g.FillEllipse(b, Width / 2 - 5, cy - 43, 10, 10);
 
         var headRect = new Rectangle(0, cy - 6, Width, 24);
-        Draw.Text(g, Heading, Tokens.FontBodyStrong, Tokens.TextSecondary, headRect, HorizontalAlignment.Center);
+        Draw.TextGdi(g, Heading, Tokens.FontBodyStrong, Tokens.TextSecondary, headRect, HorizontalAlignment.Center);
 
         if (!string.IsNullOrEmpty(Detail))
         {
             var detRect = new Rectangle(Tokens.S5, cy + 20, Width - Tokens.S5 * 2, 44);
-            Draw.Text(g, Detail, Tokens.FontCaption, Tokens.TextMuted, detRect, HorizontalAlignment.Center);
+            Draw.TextGdi(g, Detail, Tokens.FontCaption, Tokens.TextMuted, detRect, HorizontalAlignment.Center);
         }
     }
 }
