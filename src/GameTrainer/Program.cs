@@ -16,41 +16,36 @@ internal static class Program
     private static string _skillRoot;
 
     // ---- 控制台处理 ----
-    // 程序是 Exe（控制台子系统），这样命令行输出 100% 正常：
-    // shell 会同步等待、stdout 重定向可用（实测 WinExe 下 `> out.txt` 是 0 字节，
-    // 因为 GUI 子系统进程不被 shell 等待）。
     //
-    // 但双击时控制台子系统会弹出黑框。解决办法：双击即"无参数启动"，
-    // 此时把自己的控制台窗口隐藏掉。命令行用法一定带参数，不受影响。
+    // 程序是 Exe（控制台子系统），这样命令行输出与重定向 100% 正常。
+    //
+    // 代价是双击时 Windows 会分配一个控制台。之前的处理是
+    // ShowWindow(SW_HIDE) 把窗口藏起来 —— 那是错的：
+    // 隐藏只是不可见，conhost.exe 仍挂在后台，任务栏上还能看到
+    // 一个最小化的终端图标（实测确认）。
+    //
+    // 正确做法是 FreeConsole：把进程与控制台彻底断开，
+    // conhost 随之退出，任务栏不留任何痕迹。
     [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr GetConsoleWindow();
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-    private const int SW_HIDE = 0;
+    private static extern bool FreeConsole();
 
     /// <summary>
-    /// 双击启动时隐藏自动弹出的控制台黑框。
-    /// 只隐藏、不 Free/Alloc，避免破坏已附着的 stdin/stdout。
+    /// 双击启动时彻底释放控制台。
+    ///
+    /// FreeConsole 之后进程不再有控制台，conhost.exe 会自行退出。
+    /// 与 ShowWindow(SW_HIDE) 的区别：后者只是把窗口藏起来，进程还在。
+    ///
+    /// 只在无参数（双击）时调用；CLI 用法一定带参数，需要保留控制台。
     /// </summary>
-    private static void HideConsoleWindow()
+    private static void DetachConsole()
     {
-        IntPtr hwnd = GetConsoleWindow();
-        if (hwnd != IntPtr.Zero) ShowWindow(hwnd, SW_HIDE);
+        try { FreeConsole(); }
+        catch { /* 没有控制台时忽略 */ }
     }
 
     private static int Main(string[] args)
     {
-        // 隐藏控制台必须放在最前面，在任何 Console 操作与初始化之前。
-        //
-        // 为什么：本程序是 Exe（控制台子系统）——这样 CLI 用法下 stdout 重定向
-        // 才可用（WinExe 下 `> out.txt` 是 0 字节，实测过）。
-        // 代价是双击时 Windows 会先创建一个控制台窗口。
-        //
-        // 无参数 = 双击启动 → 立刻隐藏，把闪烁压到最短。
-        // 有参数 = CLI → 保留控制台，AI/脚本要用。
-        if (args.Length == 0) HideConsoleWindow();
+        if (args.Length == 0) DetachConsole();
 
         _skillRoot = ResolveSkillRoot();
 

@@ -53,6 +53,9 @@ internal sealed class HomeView : Control
     public event Action<AdapterRepository.RemoteAdapter> DownloadRequested;
     public event Action<string> UninstallRequested;
 
+    /// <summary>右键「设置游戏路径」：参数是适配包 id。</summary>
+    public event Action<string> LocateExeRequested;
+
     public HomeView()
     {
         DoubleBuffered = true;
@@ -514,12 +517,16 @@ internal sealed class HomeView : Control
     {
         base.OnMouseUp(e);
 
-        // 右键已安装卡片 → 卸载
+        // 右键已安装卡片 → 弹上下文菜单。
+        //
+        // 原来是直接卸载，没有确认、也没有其它选项——
+        // 一次误触就把适配包删了。而且"设置游戏路径"这类操作
+        // 也应该能从这里进，不该只有卸载一个动作。
         if (e.Button == MouseButtons.Right)
         {
             int ri = HitTest(e.Location);
             if (ri >= 0 && _items[ri].Installed)
-                UninstallRequested?.Invoke(_items[ri].Id);
+                ShowCardMenu(_items[ri], e.Location);
             return;
         }
 
@@ -533,6 +540,24 @@ internal sealed class HomeView : Control
 
         if (it.Installed) GameSelected?.Invoke(it.Adapter);
         else if (it.Remote != null) DownloadRequested?.Invoke(it.Remote);
+    }
+
+    /// <summary>
+    /// 已安装卡片的右键菜单：设置路径 / 卸载。
+    /// </summary>
+    private void ShowCardMenu(Item item, Point at)
+    {
+        var menu = new ContextMenuStrip { Font = Tokens.FontBody };
+
+        menu.Items.Add("设置游戏路径…", null, (_, _) =>
+            LocateExeRequested?.Invoke(item.Id));
+
+        menu.Items.Add(new ToolStripSeparator());
+
+        menu.Items.Add("卸载适配包", null, (_, _) =>
+            UninstallRequested?.Invoke(item.Id));
+
+        menu.Show(this, at);
     }
 
     /// <summary>命中测试。自绘控件没有子控件，必须自己算。</summary>

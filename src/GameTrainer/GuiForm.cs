@@ -305,6 +305,7 @@ internal sealed class GuiForm : Form
         _homePage.GameSelected += adapter => EnterGamePage(adapter);
         _homePage.DownloadRequested += remote => _ = DownloadAdapterAsync(remote);
         _homePage.UninstallRequested += id => UninstallAdapter(id);
+        _homePage.LocateExeRequested += id => LocateGameExe(id);
 
         var pages = new Panel { Dock = DockStyle.Fill, BackColor = Tokens.PageBack };
         pages.Controls.Add(_homePage);
@@ -526,6 +527,56 @@ internal sealed class GuiForm : Form
 
         if (target != null) EnterGamePage(target);
         else ShowHomePage();
+    }
+
+    /// <summary>
+    /// 让用户指定游戏的可执行文件。
+    ///
+    /// 为什么需要手动指定：
+    /// 早期实现会在 C:/D:/E:/F: 的 Games 目录下自动找游戏，
+    /// 那是未经同意的磁盘探测，已删除。
+    /// 现在只认适配包里的 installDir 或用户在这里指定的路径。
+    /// </summary>
+    private void LocateGameExe(string adapterId)
+    {
+        var adapter = LoadInstalledAdapters().FirstOrDefault(a =>
+            string.Equals(a.Id, adapterId, StringComparison.OrdinalIgnoreCase));
+
+        if (adapter == null)
+        {
+            Log($"[路径] 找不到适配包 {adapterId}");
+            return;
+        }
+
+        using var dlg = new OpenFileDialog
+        {
+            Title = $"选择 {adapter.Name} 的可执行文件",
+            Filter = "可执行文件 (*.exe)|*.exe|所有文件 (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+
+        // 已有的路径作为初始位置
+        string existing = AdapterInstallPaths.Resolve(adapterId);
+        if (!string.IsNullOrWhiteSpace(existing) && File.Exists(existing))
+            dlg.InitialDirectory = Path.GetDirectoryName(existing);
+
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+        // 名字对不上要提醒，但允许继续（用户可能改了 exe 名）
+        string chosen = dlg.FileName;
+        if (!string.Equals(Path.GetFileName(chosen), adapter.Exe, StringComparison.OrdinalIgnoreCase))
+        {
+            var r = MessageBox.Show(this,
+                $"你选的是 {Path.GetFileName(chosen)}，适配包期望的是 {adapter.Exe}。\n\n"
+                + "继续保存吗？（名字不同可能导致后续读写失败）",
+                "GameTrainer", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+
+            if (r != DialogResult.Yes) return;
+        }
+
+        AdapterInstallPaths.Set(adapterId, chosen);
+        Log($"[路径] {adapter.Name} 已指定：{chosen}");
     }
 
     /// <summary>卸载适配包。入口保留在首页卡片上，卸载后卡片变成"可下载"。</summary>
