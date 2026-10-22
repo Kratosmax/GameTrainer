@@ -717,17 +717,26 @@ internal sealed class GuiForm : Form
             Padding = new Padding(0, 0, 0, Tokens.S2)
         };
 
+        // 不用 AutoSize：AutoSize 的 Label 高度由字体决定，
+        // 而父容器高度固定时会被裁掉下缘（实测 23pt 标题被切）。
+        // 改成固定高度 + 垂直居中，尺寸可预期。
         _gameTitle.Text = "未选择游戏";
         _gameTitle.Font = Tokens.FontTitle;
         _gameTitle.ForeColor = Tokens.TextPrimary;
-        _gameTitle.AutoSize = true;
-        _gameTitle.Location = new Point(0, Tokens.S2);
+        _gameTitle.AutoSize = false;
+        _gameTitle.Height = 44;   // 23pt 微软雅黑行高约 40px，38 会裁下缘
+        _gameTitle.Width = 640;          // AutoSize=false 时必须显式给宽度，否则用默认 100px 会截断
+        _gameTitle.TextAlign = ContentAlignment.MiddleLeft;
+        _gameTitle.Location = new Point(0, 0);
 
         _gameSubtitle.Text = "";
         _gameSubtitle.Font = Tokens.FontCaption;
         _gameSubtitle.ForeColor = Tokens.TextMuted;
-        _gameSubtitle.AutoSize = true;
-        _gameSubtitle.Location = new Point(2, Tokens.S2 + 40);
+        _gameSubtitle.AutoSize = false;
+        _gameSubtitle.Height = 22;
+        _gameSubtitle.Width = 640;
+        _gameSubtitle.TextAlign = ContentAlignment.MiddleLeft;
+        _gameSubtitle.Location = new Point(2, 44);
 
         _gameStatePill.Dock = DockStyle.None;
         _gameStatePill.Anchor = AnchorStyles.Top | AnchorStyles.Right;

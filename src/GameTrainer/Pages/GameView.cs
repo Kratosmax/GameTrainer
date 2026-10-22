@@ -209,8 +209,9 @@ internal sealed class GameView : Control
 
     public void PlayEnter()
     {
-        _pageT = 0f;
-        foreach (var b in _blocks) b.AppearT = 0f;
+        // 起始 0.35 而非 0：动画不推进时界面仍必须可读（理由见 HomeView.PlayEnter）
+        _pageT = 0.35f;
+        foreach (var b in _blocks) b.AppearT = 0.35f;
 
         int total = Tokens.AnimNormal + _blocks.Count * Tokens.AnimStagger;
 
@@ -218,13 +219,13 @@ internal sealed class GameView : Control
         {
             if (IsDisposed) return false;
 
-            _pageT = raw;
+            _pageT = Math.Max(0.35f, raw);
             float elapsed = raw * total;
 
             for (int i = 0; i < _blocks.Count; i++)
             {
                 float local = Math.Clamp((elapsed - i * Tokens.AnimStagger) / Tokens.AnimNormal, 0f, 1f);
-                _blocks[i].AppearT = Easing.EaseOut(local);
+                _blocks[i].AppearT = Math.Max(0.35f, Easing.EaseOut(local));
             }
 
             Invalidate();
@@ -278,7 +279,7 @@ internal sealed class GameView : Control
     private void PaintBlock(Graphics g, Block b, Rectangle rc)
     {
         float t = b.AppearT;
-        if (t <= 0.001f) return;
+        if (t <= 0.001f) t = 0.35f;   // 兜底：任何情况下卡片都要可见
 
         int dy = (int)(14 * (1 - t));
         var r = new Rectangle(rc.X, rc.Y + dy, rc.Width, rc.Height);

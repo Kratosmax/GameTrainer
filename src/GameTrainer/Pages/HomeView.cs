@@ -175,8 +175,11 @@ internal sealed class HomeView : Control
     /// <summary>页面进入：整体淡入 + 卡片错峰上移。</summary>
     public void PlayEnter()
     {
-        _pageT = 0f;
-        foreach (var it in _items) it.AppearT = 0f;
+        // 起始不是 0 而是 0.35：动画没跑完时页面也必须是"可读"的。
+        // 从 0 起会让首帧完全空白，若动画因任何原因不推进，
+        // 用户看到的就是一个空窗口（实测踩过，代价很大）。
+        _pageT = 0.35f;
+        foreach (var it in _items) it.AppearT = 0.35f;
 
         int total = Tokens.AnimNormal + _items.Count * Tokens.AnimStagger;
 
@@ -184,14 +187,14 @@ internal sealed class HomeView : Control
         {
             if (IsDisposed) return false;
 
-            _pageT = raw;
+            _pageT = Math.Max(0.35f, raw);
 
             float elapsedMs = raw * total;
             for (int i = 0; i < _items.Count; i++)
             {
                 float startMs = i * Tokens.AnimStagger;
                 float local = Math.Clamp((elapsedMs - startMs) / Tokens.AnimNormal, 0f, 1f);
-                _items[i].AppearT = Easing.EaseOut(local);
+                _items[i].AppearT = Math.Max(0.35f, Easing.EaseOut(local));
             }
 
             Invalidate();
@@ -336,7 +339,7 @@ internal sealed class HomeView : Control
     private void PaintCard(Graphics g, Item it, Rectangle rc)
     {
         float t = it.AppearT;
-        if (t <= 0.001f) return;
+        if (t <= 0.001f) t = 0.35f;   // 兜底：任何情况下卡片都要可见
 
         // 进入动画：上移 + 淡入；按下时轻微下沉
         int enterDy = (int)(16 * (1 - t));
