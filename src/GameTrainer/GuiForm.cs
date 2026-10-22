@@ -784,7 +784,12 @@ internal sealed class GuiForm : Form
         _logPad.Controls.Add(logInner);
         _logCard.Controls.Add(_logPad);
 
-        _logCard.ActionText = "收起";
+        // 日志默认收起：内容区（修改项）是主工作流，优先给它空间。
+        // 展开时再切出 180px。这个默认值来自实测——默认展开会压掉 3 行员工。
+        _logCollapsed = true;
+        _logPad.Visible = false;
+        _logCard.ActionText = "展开";
+        _logCard.Height = LogHeaderOnlyHeight;
         _logCard.Cursor = Cursors.Hand;
         _logCard.HeaderClick += () => ToggleLogCollapsed(_logPad);
 
@@ -1174,6 +1179,37 @@ internal sealed class GuiForm : Form
     {
         _hotkeys?.HandleMessage(m.Msg, m.WParam);
         base.WndProc(ref m);
+    }
+
+    /// <summary>
+    /// 把按键转发给 GameView。
+    ///
+    /// GameView 是自绘控件、不接收焦点（没有 Selectable 样式），
+    /// 所以键盘必须由窗体统一转发。这样也避免了"点输入框就把焦点
+    /// 从用户正在用的其他窗口抢过来"。
+    /// </summary>
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (_gameView != null && _gameView.Visible && _gameView.IsEditing)
+        {
+            if (_gameView.HandleKeyDown(keyData & Keys.KeyCode))
+                return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    /// <summary>字符输入同样转发给 GameView（数字、退格、回车）。</summary>
+    protected override void OnKeyPress(KeyPressEventArgs e)
+    {
+        if (_gameView != null && _gameView.Visible && _gameView.IsEditing)
+        {
+            if (_gameView.HandleKeyChar(e.KeyChar))
+            {
+                e.Handled = true;
+                return;
+            }
+        }
+        base.OnKeyPress(e);
     }
 
     // ---------------- 业务 ----------------

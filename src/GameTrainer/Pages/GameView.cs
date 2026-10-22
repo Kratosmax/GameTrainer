@@ -293,8 +293,8 @@ internal sealed class GameView : Control
 
         // ---- 标题行 ----
         var titleRect = new Rectangle(r.X + p, r.Y + Tokens.S3, r.Width - p * 2 - 100, 26);
-        Draw.TextLeft(g, b.Title, Tokens.FontSection,
-            Easing.WithAlpha(Tokens.TextPrimary, t), titleRect);
+        // 标题始终全不透明：它是定位信息，不能随动画淡入。
+        Draw.TextLeft(g, b.Title, Tokens.FontSection, Tokens.TextPrimary, titleRect);
 
         // 右上状态
         var stateRect = new Rectangle(r.Right - p - 96, r.Y + Tokens.S3, 96, 26);
@@ -304,15 +304,13 @@ internal sealed class GameView : Control
         else if (b.IsCollection) { stateText = $"{b.Rows.Count} 个条目"; stateColor = Tokens.TextMuted; }
         else { stateText = "已读取"; stateColor = Tokens.Success; }
 
-        Draw.TextRight(g, stateText, Tokens.FontCaption,
-            Easing.WithAlpha(stateColor, t), stateRect);
+        Draw.TextRight(g, stateText, Tokens.FontCaption, stateColor, stateRect);
 
         // ---- 错误提示 ----
         if (!b.Ok)
         {
             var errRect = new Rectangle(r.X + p, r.Y + 38, r.Width - p * 2, 26);
-            Draw.TextLeft(g, ShortenError(b.Error), Tokens.FontCaption,
-                Easing.WithAlpha(Tokens.TextMuted, t), errRect);
+            Draw.TextLeft(g, ShortenError(b.Error), Tokens.FontCaption, Tokens.TextMuted, errRect);
             return;
         }
 
@@ -341,9 +339,13 @@ internal sealed class GameView : Control
                 Easing.WithAlpha(Tokens.SurfaceHover, row.HoverT * 0.7f));
         }
 
-        int inputW = 84;
-        int btnW = 64;
-        int valueW = 72;
+        // 数值区宽度按实际文字测量，而不是固定值。
+        // 固定 130px 装不下 19pt 的 2,000,070（实测被截成 2000...）。
+        // 用 12pt 单值字体测，给 16px 余量。
+        int inputW = 110;
+        int btnW = 72;
+        int valueW = Math.Max(90,
+            Draw.Measure(g, row.Value ?? "", Tokens.FontValue).Width + Tokens.S4);
 
         // 左侧：名称（集合）或标签（单值）
         int nameW = r.Width - inputW - btnW - valueW - Tokens.S3 * 3;
@@ -389,7 +391,7 @@ internal sealed class GameView : Control
 
         if (string.IsNullOrEmpty(text) && !row.Editing)
         {
-            Draw.TextLeft(g, "输入新值", Tokens.FontCaption, Tokens.TextDisabled, textRect);
+            Draw.TextLeft(g, "新值", Tokens.FontCaption, Tokens.TextDisabled, textRect);
             return;
         }
 
@@ -479,7 +481,9 @@ internal sealed class GameView : Control
         base.OnMouseDown(e);
         if (e.Button != MouseButtons.Left) return;
 
-        Focus();
+        // 不调 Focus()：控件没有 Selectable 样式，Focus 会失败。
+        // 键盘输入改由父窗体 ProcessCmdKey 转发到 HandleKey / HandleChar，
+        // 这样不依赖控件焦点，也不会因为抢焦点打断用户在其他窗口的操作。
 
         var (block, row) = HitTest(e.Location);
         if (row == null) { EndEdit(); return; }
@@ -555,20 +559,23 @@ internal sealed class GameView : Control
     }
 
     // ---------- 键盘 ----------
+    //
+    // 控件没有 Selectable 样式，不接收焦点，所以键盘事件由父窗体
+    // ProcessCmdKey / 主窗体的 KeyPress 转发到下面两个方法。
+    // 好处：不依赖焦点，不会因为点了输入框就把焦点从用户正在用的
+    // 其他窗口抢过来。
 
-    protected override bool IsInputKey(Keys keyData)
+    /// <summary>是否有行处于编辑状态。父窗体据此决定要不要拦截按键。</summary>
+    public bool IsEditing => _focusRow != null;
+
+    /// <summary>
+    /// 处理一个字符输入。返回 true 表示已消费，调用方应吞掉该按键。
+    /// </summary>
+    public bool HandleKeyChar(char ch)
     {
-        // 让方向键与字符键进入 OnKeyDown 而不是被父容器吃掉
-        return true;
-    }
+        if (_focusRow == null) return false;
 
-    protected override void OnKeyPress(KeyPressEventArgs e)
-    {
-        base.OnKeyPress(e);
-
-        if (_focusRow == null) return;
-
-        if (e.KeyChar == '\b')
+        if (ch == '\b')
         {
             if (_caret > 0)
             {
@@ -576,57 +583,75 @@ internal sealed class GameView : Control
                 _caret--;
             }
         }
-        else if (e.KeyChar == '\r')
+        else if (ch == '\r')
         {
             CommitEdit();
         }
-        else if (!char.IsControl(e.KeyChar))
+        else if (!char.IsControl(ch))
         {
-            _buffer = _buffer.Insert(_caret, e.KeyChar.ToString());
+            _buffer = _buffer.Insert(_caret, ch.ToString());
             _caret++;
         }
 
-        e.Handled = true;
         Invalidate();
+        return true;
     }
 
-    protected override void OnKeyDown(KeyEventArgs e)
+    /// <summary>
+    /// 处理功能键（方向、Esc、回车）。返回 true 表示已消费。
+    /// </summary>
+    public bool HandleKeyDown(Keys key)
     {
-        base.OnKeyDown(e);
-
         if (_focusRow == null)
         {
-            // 无编辑时：上下滚动
-            if (e.KeyCode == Keys.Down) { _scrollTarget += 60; ScrollTo(); }
-            else if (e.KeyCode == Keys.Up) { _scrollTarget = Math.Max(0, _scrollTarget - 60); ScrollTo(); }
-            return;
+            // 无编辑时：上下滚动内容区
+            if (key == Keys.Down) { _scrollTarget = Math.Min(MaxScroll, _scrollTarget + 60); ScrollTo(); return true; }
+            if (key == Keys.Up) { _scrollTarget = Math.Max(0, _scrollTarget - 60); ScrollTo(); return true; }
+            return false;
         }
 
-        switch (e.KeyCode)
+        switch (key)
         {
             case Keys.Left:
                 _caret = Math.Max(0, _caret - 1);
-                e.Handled = true;
                 Invalidate();
-                break;
+                return true;
             case Keys.Right:
                 _caret = Math.Min(_buffer.Length, _caret + 1);
-                e.Handled = true;
                 Invalidate();
-                break;
+                return true;
             case Keys.Escape:
                 EndEdit();
-                e.Handled = true;
-                break;
+                return true;
+            case Keys.Enter:
+                CommitEdit();
+                return true;
+            default:
+                return false;
         }
     }
 
     protected override void OnMouseWheel(MouseEventArgs e)
     {
         base.OnMouseWheel(e);
-        _scrollTarget = Math.Max(0, _scrollTarget - e.Delta);
+        _scrollTarget = Math.Clamp(_scrollTarget - e.Delta, 0, MaxScroll);
         ScrollTo();
     }
+
+    /// <summary>内容总高度（用于滚动上限）。</summary>
+    private int ContentHeight
+    {
+        get
+        {
+            int pad = Tokens.S5;
+            int total = pad;
+            foreach (var b in _blocks) total += MeasureBlock(b) + Tokens.S3;
+            return total + pad;
+        }
+    }
+
+    /// <summary>可滚动的最大偏移。内容不超一屏时为 0。</summary>
+    private int MaxScroll => Math.Max(0, ContentHeight - Height);
 
     private void ScrollTo()
     {

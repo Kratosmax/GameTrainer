@@ -741,3 +741,52 @@ SHA256=FD194B566B046C4503CDF728376AE1660A7621F726B4C40176CDD43CA47AD618
 - **双击修改项打开设置弹窗**：需要真实双击事件
 - **首页点卡片进入游戏页**：需要真实点击（页面切换代码路径已实现）
 - **高 DPI**：当前仅 96 DPI 环境
+
+---
+
+## OriginOS 4 GUI 重构（2026-10-22）
+
+### 已完成
+
+| 项 | 结果 |
+|---|---|
+| 设计语言 | OriginOS 4：圆角 28/20/26、主色 #415FFF→#7B5CFF 渐变、阴影 blur18/offset6/alpha26、动效 170/290/400ms Spring |
+| 绘制原语 | `UI/Draw.cs` 合并原 `Paint.cs`，消除 6 处重复圆角实现 |
+| 动画驱动 | `UI/Animator.cs` 单一定时器（16ms）驱动全部动画，无动画时停表 |
+| 状态源 | `Services/GameSession.cs` 收拢适配包/状态/读写/监控/日志，对外只发事件 |
+| 首页 | `Pages/HomeView.cs` 单控件自绘，删除 HomePage.cs + GameCard.cs（461 行） |
+| 游戏页 | `Pages/GameView.cs` 单控件自绘，删除 CollectionCard.cs + ValueCard.cs（807 行） |
+| GuiForm | 2046 → 1747 行 |
+
+### 关键教训（都踩过，别重犯）
+
+**1. 动画不能是"界面可见"的前提**
+进入动画起始值设为 0 时，若动画不推进（句柄未建、定时器被节流、截图抓得早），
+首帧完全空白，用户看到空窗口。**起始值必须给可见基线（0.35）**。
+
+**2. `Animator` 不能因 `!IsHandleCreated` 丢弃动画**
+控件常在构造期启动进入动画，此时句柄未建。丢弃会导致动画永不推进、
+进度恒为 0、所有依赖进度做 alpha 的绘制全透明 —— 表现就是"内容区一片空白"。
+只丢弃 `IsDisposed`。
+
+**3. `TableLayoutPanel` 的 Percent 行会被 Absolute 行压成 0**
+两行布局里日志抽屉占满后，内容区行高归零。改用 `Panel` + `Resize` 里算绝对位置。
+
+**4. `Label.AutoSize = false` 必须显式给 Width**
+否则用默认 100px，`Hospital Rhapsody` 被截成 `Hos`。
+23pt 微软雅黑行高约 40px，Height 给 38 会裁下缘，要用 44。
+
+**5. `DrawToBitmap` 不触发 `UserPaint` 控件的 `OnPaint`**
+UiShot 改用 `PrintWindow`（发 WM_PRINT）才能抓到自绘内容。
+但即便如此，自绘控件仍需真实渲染过一次，所以截图前要 `Invalidate + Update`。
+
+**6. 字符串替换会静默失败**
+`GuiForm.cs` / `GameView.cs` 里含中文的行，用 PowerShell 的 `.Replace()` 常匹配不上，
+且不报错。**改完必须回读确认**（`read` 工具或字节级检查），不能假设成功。
+本轮有 5 次替换静默失败，导致反复验证"没变化"却以为代码生效了。
+
+### 待验证
+
+- 真实存档下的游戏页渲染（当前游戏停在标题界面，读不到 Userdata，显示中性空状态属正确行为）
+- 双击行打开设置、输入框编辑、应用按钮的实际交互
+- 高 DPI 下的布局

@@ -147,6 +147,88 @@ internal static class Program
         {
             report.AppendLine($"game-page.capture.failed = {ex.Message}");
         }
+
+        // 有数据时的游戏页：用假数据验证卡片布局（标题、数值、输入框、应用按钮）。
+        // 真实数据需要游戏处于存档内，截图环境不一定满足，所以单独造一份。
+        try
+        {
+            var gvField2 = guiType.GetField("_gameView",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var gv2 = gvField2?.GetValue(gui) as Control;
+
+            var adapterField = guiType.GetField("_adapter",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var ad = adapterField?.GetValue(gui);
+
+            if (gv2 != null && ad != null)
+            {
+                // 构造 ReadResult 字典
+                var readResultType = Type.GetType("GameTrainer.Adapter.AdapterRunner+ReadResult, GameTrainer");
+                var collItemType = Type.GetType("GameTrainer.Adapter.AdapterRunner+CollectionItem, GameTrainer");
+                var dictType = typeof(Dictionary<,>).MakeGenericType(typeof(string), readResultType);
+                var dict = (System.Collections.IDictionary)Activator.CreateInstance(dictType);
+
+                var roster = new (int Id, string Name, string Good, string Bad, string Med)[]
+                {
+                    (1001, "林语溪", "85", "12", "72"),
+                    (1203, "罗伯特·戴维斯", "64", "30", "58"),
+                    (1208, "托马斯·杰克逊", "41", "55", "63"),
+                    (2001, "王小红", "77", "8", "81"),
+                    (2020, "普里亚·夏尔马", "52", "19", "69"),
+                    (2500, "安小萌", "90", "5", "76"),
+                };
+
+                string[] semKeys = { "employee_good", "employee_bad", "employee_medical" };
+
+                foreach (var sem in semKeys)
+                {
+                    var items = (System.Collections.IList)Activator.CreateInstance(
+                        typeof(List<>).MakeGenericType(collItemType));
+
+                    foreach (var r in roster)
+                    {
+                        string v = sem switch
+                        {
+                            "employee_good" => r.Good,
+                            "employee_bad" => r.Bad,
+                            _ => r.Med
+                        };
+                        // CollectionItem 是 record，没有无参构造，必须走带参构造
+                        var it = Activator.CreateInstance(collItemType, r.Id, r.Name, v);
+                        items.Add(it);
+                    }
+
+                    // ReadResult 是 record：(Semantic, Ok, Value, Where, Error)
+                    var rr = Activator.CreateInstance(readResultType,
+                        new object[] { sem, true, null, null, null });
+                    readResultType.GetProperty("Items").SetValue(rr, items);
+                    dict[sem] = rr;
+                }
+
+                // gold_total 用单值
+                var goldRr = Activator.CreateInstance(readResultType,
+                    new object[] { "gold_total", true, "2000070", null, null });
+                dict["gold_total"] = goldRr;
+
+                var setData = gv2.GetType().GetMethod("SetData");
+                if (setData != null)
+                {
+                    var adapterType2 = ad.GetType();
+                    setData.Invoke(gv2, new object[] { ad, dict });
+                    gui.Show();
+                    Pump(1200);
+                    gv2.Invalidate();
+                    gv2.Update();
+                    Pump(400);
+                    results.Add(Capture(gui, Path.Combine(outDir, "game-data.png"), gui.Size));
+                    report.AppendLine("game-data.captured = true");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            report.AppendLine($"game-data.failed = {ex.GetType().Name}: {ex.Message}");
+        }
         emptyGui.Close();
         emptyGui.Dispose();
 
