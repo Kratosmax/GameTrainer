@@ -120,6 +120,20 @@ internal static class Program
                                 Pump(200);
                                 enter.Invoke(gui, new[] { adapter });
                                 Pump(700);   // 等页面过渡动画跑完
+
+                                // DrawToBitmap 对自绘控件不会主动触发 OnPaint，
+                                // 必须先让控件真正渲染到屏幕一次。用 Invalidate + Update 强制。
+                                var gvForRefresh = guiType.GetField("_gameView",
+                                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?.GetValue(gui) as Control;
+                                if (gvForRefresh != null)
+                                {
+                                    gvForRefresh.Invalidate();
+                                    gvForRefresh.Update();
+                                    Pump(300);
+                                    gvForRefresh.Invalidate();
+                                    gvForRefresh.Update();
+                                    Pump(200);
+                                }
                                 results.Add(Capture(gui,
                                     Path.Combine(outDir, "game-page.png"), gui.Size));
                                 gui.Hide();
@@ -284,14 +298,34 @@ internal static class Program
         }
     }
 
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
+
+    private const uint PW_RENDERFULLCONTENT = 0x00000002;
+
     private static string Capture(Form f, string path, Size size)
     {
         using var bmp = new Bitmap(f.Width, f.Height);
-        using (Graphics g = Graphics.FromImage(bmp))
+
+        // 先试 PrintWindow：它会向窗口发 WM_PRINT，触发真实绘制流程，
+        // 自绘控件（UserPaint）也能正确出图。
+        // DrawToBitmap 对 UserPaint 控件不触发 OnPaint，会得到空白区域（实测）。
+        bool ok = false;
+        try
         {
-            // 直接抓窗口内容，避免被其他窗口遮挡
-            f.DrawToBitmap(bmp, new Rectangle(0, 0, f.Width, f.Height));
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                IntPtr hdc = g.GetHdc();
+                ok = PrintWindow(f.Handle, hdc, PW_RENDERFULLCONTENT);
+                g.ReleaseHdc(hdc);
+            }
         }
+        catch { ok = false; }
+
+        // PrintWindow 失败（某些 GPU/远程桌面环境）时回退 DrawToBitmap
+        if (!ok)
+            f.DrawToBitmap(bmp, new Rectangle(0, 0, f.Width, f.Height));
+
         bmp.Save(path, ImageFormat.Png);
         return $"{path}  {size.Width}x{size.Height}";
     }

@@ -97,8 +97,13 @@ internal static class Animator
         {
             Track t = _tracks[i];
 
-            // 宿主已销毁：静默丢弃，不让已释放控件继续收帧
-            if (t.Owner is Control c && (c.IsDisposed || !c.IsHandleCreated))
+            // 只丢弃已销毁的宿主。
+            //
+            // 不要因为 !IsHandleCreated 就丢弃：控件常在构造期（句柄未建）就启动
+            // 进入动画，此时丢弃会让动画永远不跑、进度恒为 0，
+            // 表现为"数据都设好了但界面一片空白"（实测踩过）。
+            // 句柄还没建时回调里的 Invalidate 是安全的（WinForms 会排队到建柄后）。
+            if (t.Owner is Control c && c.IsDisposed)
             {
                 _tracks.RemoveAt(i);
                 continue;

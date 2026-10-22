@@ -30,10 +30,8 @@ internal sealed class GameView : Control
         public Rectangle Bounds;
         public Rectangle InputRect;
         public Rectangle ApplyRect;
-        public float AppearT;
         public float HoverT;
         public bool Editing;        // 输入框是否聚焦
-        public int CaretPos;
     }
 
     private sealed class Block
@@ -74,14 +72,15 @@ internal sealed class GameView : Control
 
     public GameView()
     {
-        DoubleBuffered = true;
+        // 与 HomeView 完全一致的样式组合。
+        // 这里刻意不加 Selectable / TabStop：它们会让控件进入可聚焦分支，
+        // 在 PrintWindow / DrawToBitmap 下出现"布局正确但完全不绘制"的现象。
+        // 键盘输入靠 ProcessCmdKey 处理，不依赖控件焦点。
         SetStyle(ControlStyles.AllPaintingInWmPaint |
                  ControlStyles.OptimizedDoubleBuffer |
                  ControlStyles.UserPaint |
-                 ControlStyles.ResizeRedraw |
-                 ControlStyles.Selectable, true);
+                 ControlStyles.ResizeRedraw, true);
         BackColor = Tokens.PageBack;
-        TabStop = true;
     }
 
     // ---------- 数据填充 ----------
@@ -158,6 +157,23 @@ internal sealed class GameView : Control
 
     public void SetCollapsedLookup(Func<string, bool> lookup) => _collapsedLookup = lookup;
 
+    /// <summary>
+    /// 取某语义第一个已填写的输入框内容（热键触发时用）。
+    /// 没有则返回空串。
+    /// </summary>
+    public string FirstInputText(string semantic)
+    {
+        var b = _blocks.FirstOrDefault(x =>
+            string.Equals(x.Semantic, semantic, StringComparison.OrdinalIgnoreCase));
+        if (b == null) return "";
+
+        // 优先返回正在编辑的缓冲内容
+        if (b == _focusBlock && _focusRow != null && _buffer.Length > 0)
+            return _buffer.Trim();
+
+        return b.Rows.Select(r => r.Input.Trim()).FirstOrDefault(v => v.Length > 0) ?? "";
+    }
+
     private static string DisplayName(string semantic) => semantic switch
     {
         "gold_total" => "总资产",
@@ -185,6 +201,9 @@ internal sealed class GameView : Control
 
     private string _emptyHeading;
     private string _emptyDetail;
+
+    /// <summary>OnPaint 调用次数。用于诊断"内容区空白"是没绘制还是画错了。</summary>
+    public int PaintCount { get; private set; }
 
     // ---------- 动画 ----------
 
@@ -217,6 +236,8 @@ internal sealed class GameView : Control
 
     protected override void OnPaint(PaintEventArgs e)
     {
+        PaintCount++;
+
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
 
@@ -385,7 +406,13 @@ internal sealed class GameView : Control
 
     private void PaintEmpty(Graphics g)
     {
-        float t = Easing.EaseOut(Math.Clamp(_pageT * 2f, 0f, 1f));
+        // 空状态不依赖进入动画的进度。
+        //
+        // 实测教训：SetEmpty 后 _pageT 可能一直是 0（动画驱动器在某些时序下
+        // 不会推进它），而用 _pageT 算 alpha 会让整块文字完全透明，
+        // 表现为"内容区一片空白，但日志显示确实调用了 SetEmpty"。
+        // 空状态是必须让人看见的信息，不能挂在可能不跑的动画上。
+        const float t = 1f;
 
         string heading = _emptyHeading ?? "游戏未运行";
         string detail = _emptyDetail ?? "先启动游戏，再点「刷新数值」读取存档";

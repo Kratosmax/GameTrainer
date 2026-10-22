@@ -422,7 +422,8 @@ internal sealed class HomeView : Control
 
     private void PaintEmpty(Graphics g)
     {
-        float t = Easing.EaseOut(Math.Clamp(_pageT * 2f, 0f, 1f));
+        // 空状态必须无条件可见，不挂动画进度（理由见 GameView.PaintEmpty）。
+        const float t = 1f;
         var r = new Rectangle(0, Height / 2 - 60, Width, 40);
 
         Draw.TextCenter(g, "还没有安装任何适配包",
@@ -472,6 +473,16 @@ internal sealed class HomeView : Control
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+
+        // 右键已安装卡片 → 卸载
+        if (e.Button == MouseButtons.Right)
+        {
+            int ri = HitTest(e.Location);
+            if (ri >= 0 && _items[ri].Installed)
+                UninstallRequested?.Invoke(_items[ri].Id);
+            return;
+        }
+
         if (e.Button != MouseButtons.Left) return;
 
         int idx = HitTest(e.Location);

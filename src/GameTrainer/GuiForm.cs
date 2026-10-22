@@ -26,9 +26,6 @@ internal sealed class GuiForm : Form
 {
     private readonly string _skillRoot;
     private GameAdapter _adapter;
-    private readonly Dictionary<string, ValueCard> _cards = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, CollectionCard> _collectionCards = new(StringComparer.OrdinalIgnoreCase);
-    private System.Windows.Forms.Timer _relayoutDebounce;
     private readonly Prefs _prefs = Prefs.Load();
     private readonly Dictionary<string, PersistentWatcher> _watchers = new(StringComparer.OrdinalIgnoreCase);
     private GameProfile _profile;
@@ -78,7 +75,13 @@ internal sealed class GuiForm : Form
     private bool _suppress;
     private bool _reallyExit;
     private WindowMaterial.Result _material;
-    private TableLayoutPanel _contentGrid = new();
+    private Panel _contentGrid;
+
+    /// <summary>OriginOS 单控件自绘的游戏内容区。</summary>
+    private Pages.GameView _gameView;
+
+    /// <summary>日志抽屉高度（收起时为 0）。</summary>
+    private const int LogDrawerHeight = 180;
 
     public static int Run(string skillRoot, bool startBackground = false)
     {
@@ -724,7 +727,7 @@ internal sealed class GuiForm : Form
         _gameSubtitle.Font = Tokens.FontCaption;
         _gameSubtitle.ForeColor = Tokens.TextMuted;
         _gameSubtitle.AutoSize = true;
-        _gameSubtitle.Location = new Point(2, Tokens.S2 + 34);
+        _gameSubtitle.Location = new Point(2, Tokens.S2 + 40);
 
         _gameStatePill.Dock = DockStyle.None;
         _gameStatePill.Anchor = AnchorStyles.Top | AnchorStyles.Right;
@@ -739,40 +742,21 @@ internal sealed class GuiForm : Form
             _gameStatePill.Left = Math.Max(0, gameHeader.ClientSize.Width - _gameStatePill.Width);
         };
 
-        _contentGrid = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 1,
-            BackColor = Tokens.PageBack,
-            Margin = new Padding(0)
-        };
-        _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
-        _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
-        _contentGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        // ---- 内容区：OriginOS 单控件自绘 GameView ----
+        //
+        // 替换旧的 _contentGrid + _patchCard + _patchHost 三层结构。
+        // 旧结构的问题：一次刷新创建 40+ 个控件，每个独立重绘，动画掉帧；
+        // 应用按钮靠手工算坐标，窗口变窄被裁；集合行高被表格反控导致只显示 3 行。
+        _gameView = new Pages.GameView { Dock = DockStyle.Fill };
+        _gameView.ValueSubmitted += (sem, val) => _ = SubmitValueAsync(sem, val);
+        _gameView.EntrySubmitted += (sem, id, val) => _ = SubmitEntryAsync(sem, id, val);
+        _gameView.SettingsRequested += (sem, id, title) => ShowEntrySettings(sem, title);
 
-        // 左卡片：修改项（主工作流）
-        _patchCard.Title = "修改项";
-        _patchCard.Dock = DockStyle.Fill;
-        _patchCard.Margin = new Padding(0, 0, Tokens.S3, 0);
-
-        _patchHost.Dock = DockStyle.Fill;
-        _patchHost.AutoScroll = true;
-        _patchHost.BackColor = Tokens.Surface;
-        _patchHost.Padding = new Padding(Tokens.S3, 0, Tokens.S3, Tokens.S3);
-
-        _patchEmpty.Dock = DockStyle.Fill;
-        _patchEmpty.Heading = "游戏未运行";
-        _patchEmpty.Detail = "先启动游戏，再点「刷新数值」读取存档\n每项可单独启用或停用";
-        _patchEmpty.Visible = true;
-
-        _patchCard.Controls.Add(_patchHost);
-        _patchCard.Controls.Add(_patchEmpty);
-
-        // 右卡片：运行日志
+        // ---- 底部日志抽屉 ----
         _logCard.Title = "运行日志";
         _logCard.Dock = DockStyle.Fill;
         _logCard.Margin = new Padding(0);
+        _logCard.Height = LogDrawerHeight;
 
         _logPad = new Panel
         {
@@ -783,7 +767,7 @@ internal sealed class GuiForm : Form
         var logInner = new Panel
         {
             Dock = DockStyle.Fill,
-            BackColor = Tokens.SurfaceSunken,
+            BackColor = Tokens.SurfaceAlt,
             Padding = new Padding(Tokens.S2)
         };
         _logBox.Dock = DockStyle.Fill;
@@ -791,20 +775,55 @@ internal sealed class GuiForm : Form
         _logPad.Controls.Add(logInner);
         _logCard.Controls.Add(_logPad);
 
-        // 日志区可收起：点标题栏右侧的「收起」切换。
-        // 依据 ui-design.md：低频区占用主要空间时应提供可发现且状态稳定的折叠能力。
         _logCard.ActionText = "收起";
         _logCard.Cursor = Cursors.Hand;
         _logCard.HeaderClick += () => ToggleLogCollapsed(_logPad);
 
-        _contentGrid.Controls.Add(_patchCard, 0, 0);
-        _contentGrid.Controls.Add(_logCard, 1, 0);
+        // 上下两段：内容区吃满剩余高度，日志固定高度在底部。
+        // 用 Panel + Dock 而不是 TableLayoutPanel：
+        // 表格的 Percent 行在 Absolute 行占满时会把第一行压成 0，
+        // 表现为内容区完全空白（实测：GameView 报 423 高但完全不渲染）。
+        // Dock 顺序确定：先加 Fill，再加 Bottom，后者从前者底部切走固定高度。
+        var stack = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Tokens.PageBack,
+            Padding = new Padding(Tokens.S5, Tokens.S2, Tokens.S5, Tokens.S4),
+            Margin = new Padding(0)
+        };
 
-        wrap.Controls.Add(_contentGrid);
+        // 不用 Dock 也不按 TableLayout：两者在嵌套时都会出现"某个子控件完全不渲染"。
+        // 改成显式 Resize 里算绝对位置，逻辑一眼可见，出问题也好定位。
+        stack.Controls.Add(_gameView);
+        stack.Controls.Add(_logCard);
+
+        _logCard.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
+        _gameView.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+
+        void RelayoutStack()
+        {
+            int padL = stack.Padding.Left, padR = stack.Padding.Right;
+            int padT = stack.Padding.Top, padB = stack.Padding.Bottom;
+            int w = stack.ClientSize.Width - padL - padR;
+            int h = stack.ClientSize.Height - padT - padB;
+            if (w <= 0 || h <= 0) return;
+
+            int logH = _logCollapsed ? LogHeaderOnlyHeight : _logCard.Height;
+            int viewH = Math.Max(80, h - logH - Tokens.S3);
+
+            _gameView.SetBounds(padL, padT, w, viewH);
+            _logCard.SetBounds(padL, padT + viewH + Tokens.S3, w, logH);
+        }
+
+        stack.Resize += (_, _) => RelayoutStack();
+        stack.HandleCreated += (_, _) => RelayoutStack();
+        RelayoutStack();
+
+        _contentGrid = stack;
+
+        wrap.Controls.Add(stack);
         wrap.Controls.Add(gameHeader);
 
-        // 窄窗口时切换为上下堆叠，避免两个卡片都被压到不可读
-        wrap.SizeChanged += (_, _) => RelayoutForWidth(wrap.ClientSize.Width);
         return wrap;
     }
 
@@ -929,75 +948,25 @@ internal sealed class GuiForm : Form
         logPad.Visible = !_logCollapsed;
         _logCard.ActionText = _logCollapsed ? "展开" : "收起";
         _logCard.Invalidate();
-        ApplyContentLayout();
+
+        // Dock 布局下只需要改卡片高度：Bottom 会自动从 Fill 区域切走对应高度。
+        // 旧实现要重算两行百分比并调 SetCellPosition，因为那时用的是 TableLayoutPanel。
+        int from = _logCollapsed ? LogDrawerHeight : LogHeaderOnlyHeight;
+        int to = _logCollapsed ? LogHeaderOnlyHeight : LogDrawerHeight;
+
+        Animator.Run(_logCard, "log-drawer", Tokens.AnimSlow, raw =>
+        {
+            if (_logCard.IsDisposed) return false;
+            _logCard.Height = Easing.LerpInt(from, to, Easing.EaseInOut(raw));
+            return true;
+        });
+
         Log(_logCollapsed ? "日志区已收起，点「展开」恢复。" : "日志区已展开。");
     }
 
-    /// <summary>
-    /// 应用内容区布局：卡片在上、日志在下的两行布局。
-    /// 收起日志时第二行高度归零，卡片吃满全部空间。
-    /// </summary>
-    private void ApplyContentLayout()
-    {
-        if (_contentGrid == null || _patchCard == null || _logCard == null) return;
+    /// <summary>日志收起时只留标题栏的高度。</summary>
+    private const int LogHeaderOnlyHeight = 52;
 
-        _contentGrid.SuspendLayout();
-        try
-        {
-            _contentGrid.ColumnCount = 1;
-            _contentGrid.RowCount = _logCollapsed ? 1 : 2;
-
-            _contentGrid.ColumnStyles.Clear();
-            _contentGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-
-            _contentGrid.RowStyles.Clear();
-            if (_logCollapsed)
-            {
-                _contentGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            }
-            else
-            {
-                _contentGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 62));
-                _contentGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 38));
-            }
-
-            _contentGrid.SetCellPosition(_patchCard, new TableLayoutPanelCellPosition(0, 0));
-            _patchCard.Margin = _logCollapsed
-                ? new Padding(0)
-                : new Padding(0, 0, 0, Tokens.S3);
-
-            if (!_logCollapsed)
-            {
-                _contentGrid.SetCellPosition(_logCard, new TableLayoutPanelCellPosition(0, 1));
-                _logCard.Margin = new Padding(0);
-            }
-        }
-        finally
-        {
-            _contentGrid.ResumeLayout(true);
-        }
-    }
-
-    private void RelayoutForWidth(int width)
-    {
-        // 内容区可用宽度扣掉侧栏与左右边距后仍不足 620 时进入紧凑模式
-        int contentWidth = width - Tokens.S5 * 2;
-        bool compact = contentWidth < 620;
-
-        // 只在「进入窄布局」时自动收一次日志，之后尊重用户显式选择
-        if (compact && !_compactApplied && !_logCollapsed && _logPad != null)
-        {
-            _logCollapsed = true;
-            _logPad.Visible = false;
-            _logCard.ActionText = "展开";
-            _logCard.Invalidate();
-        }
-        _compactApplied = compact;
-
-        ApplyContentLayout();
-    }
-
-    private bool _compactApplied;
 
     private Control BuildStatusBar()
     {
@@ -1125,7 +1094,6 @@ internal sealed class GuiForm : Form
         if (dlg.ShowDialog(this) == DialogResult.OK && dlg.Saved)
         {
             RebuildHotkeys();
-            BuildValueCards();     // 折叠状态可能变了，重建以反映
             Log($"[设置] {displayName}：快捷键 {(string.IsNullOrEmpty(ep.Hotkey) ? "未设置" : ep.Hotkey)}"
                 + (ep.Collapsed ? "，已折叠" : ""));
         }
@@ -1178,13 +1146,10 @@ internal sealed class GuiForm : Form
     /// </summary>
     private void TriggerEntryHotkey(string semantic)
     {
-        if (_adapter == null) return;
+        if (_adapter == null || _gameView == null) return;
 
-        string target = null;
-        if (_cards.TryGetValue(semantic, out var card))
-            target = card.CurrentInputText;
-        else if (_collectionCards.TryGetValue(semantic, out var cc))
-            target = cc.FirstInputText;
+        // 目标值取 GameView 里第一个已填写的输入框
+        string target = _gameView.FirstInputText(semantic);
 
         if (string.IsNullOrWhiteSpace(target))
         {
@@ -1193,7 +1158,7 @@ internal sealed class GuiForm : Form
         }
 
         Log($"[热键] {Semantics.Display(semantic)} → {target}");
-        _ = ApplyValueAsync(semantic, target);
+        _ = SubmitValueAsync(semantic, target);
     }
 
     protected override void WndProc(ref Message m)
@@ -1300,7 +1265,6 @@ internal sealed class GuiForm : Form
 
                 _adapter = a;
                 _profile = null;
-                BuildValueCards();
                 UpdateStatusForAdapter(a);
                 _refreshBtn.Enabled = true;
                 Log($"已选择适配包：{a.Id}（{a.Bindings.Count} 个数值）");
@@ -1318,101 +1282,6 @@ internal sealed class GuiForm : Form
         }
     }
 
-    /// <summary>
-    /// 按适配包的绑定生成数值卡片网格。
-    /// 布局：自适应列数（每列至少 260px），多行多列，容器可纵向滚动。
-    /// </summary>
-    private void BuildValueCards()
-    {
-        _patchHost.Controls.Clear();
-        _cards.Clear();
-        if (_adapter == null) return;
-
-        bool empty = _adapter.Bindings.Count == 0;
-        _patchEmpty.Visible = empty;
-        _patchHost.Visible = !empty;
-        if (empty)
-        {
-            _patchEmpty.Heading = "这个适配包还没有绑定数值";
-            _patchEmpty.Detail = "用 probe 重新生成，或手工编辑 adapter.json 的 bindings";
-            return;
-        }
-
-        var grid = new TableLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            BackColor = Tokens.Surface,
-            Padding = new Padding(0),
-            Margin = new Padding(0),
-            ColumnCount = 1,
-            RowCount = 0
-        };
-
-        foreach (var b in _adapter.Bindings)
-        {
-            // 集合语义用专门的卡片：一张卡里按条目分行，而不是只显示汇总。
-            if (string.Equals(b.Kind, "memory_collection", StringComparison.OrdinalIgnoreCase)
-                && !b.OwnerField)
-            {
-                // 不要在这里设 Dock=Fill：集合卡片高度随条目数变化，
-                // Fill 会让它被 TableLayoutPanel 压成 0 高度而看不见。
-                var cc = new CollectionCard(b.Semantic, CollectionDisplayName(b.Semantic));
-                cc.ApplyRequested += (sem, id, v) => _ = ApplyCollectionValueAsync(sem, id, v);
-                cc.EntrySettingsRequested += (sem, id, name) => ShowEntrySettings(sem, name);
-                _collectionCards[b.Semantic] = cc;
-                continue;
-            }
-
-            var style = b.Style switch
-            {
-                "fill" => ValueCard.Style.Fill,
-                "step" => ValueCard.Style.Step,
-                "toggle" => ValueCard.Style.Toggle,
-                _ => ValueCard.Style.Number
-            };
-
-            var card = new ValueCard(
-                b.Semantic,
-                Semantics.Display(b.Semantic),
-                style,
-                b.Range,
-                b.Step,
-                b.FillFrom,
-                b.AllowPersist,
-                b.OnValue,
-                b.Warning)
-            {
-                Margin = new Padding(Tokens.S2, Tokens.S2, Tokens.S2, Tokens.S2),
-                Dock = DockStyle.Fill
-            };
-
-            card.ApplyRequested += (sem, val) => _ = ApplyValueAsync(sem, val.ToString());
-            card.FillRequested += sem => _ = FillValueAsync(sem);
-            card.ToggleRequested += (sem, on, persist) => _ = ToggleValueAsync(sem, on, persist);
-
-            _cards[b.Semantic] = card;
-        }
-
-        _patchHost.Controls.Add(grid);
-        // 防抖：拖动窗口时 Resize 会以 60fps 触发，
-        // 每次都重排会在高卡片数量下累积成明显卡顿。
-        // 延迟到用户停手 80ms 后只排一次，拖动过程零开销。
-        _relayoutDebounce = new System.Windows.Forms.Timer { Interval = 80 };
-        _relayoutDebounce.Tick += (_, _) =>
-        {
-            _relayoutDebounce.Stop();
-            RelayoutGrid(grid);
-        };
-        _patchHost.Resize += (_, _) =>
-        {
-            _relayoutDebounce.Stop();
-            _relayoutDebounce.Start();
-        };
-        RelayoutGrid(grid);
-    }
-
     /// <summary>集合语义的显示名。适配包没配中文名时用语义名兜底。</summary>
     private static string CollectionDisplayName(string semantic) => semantic switch
     {
@@ -1423,113 +1292,26 @@ internal sealed class GuiForm : Form
     };
 
     /// <summary>写集合里某个条目的值，成功后刷新整张卡片。</summary>
-    private async Task ApplyCollectionValueAsync(string semantic, int entryId, int value)
-    {
-        if (_adapter == null) return;
-        try
-        {
-            string raw = $"{entryId}={value}";
-            var r = await Task.Run(() => AdapterRunner.Write(_adapter, semantic, raw, dryRun: false));
-            if (!r.Ok) { Log($"[错误] {r.Error}"); return; }
-
-            Log($"{Semantics.Display(semantic)}：{r.Before} → {r.After}");
-
-            // 写成功后重读整张卡片，保证显示的数值与实际一致。
-            var results = await Task.Run(() => AdapterRunner.Read(_adapter, new[] { semantic }));
-            foreach (var rr in results)
-            {
-                if (_collectionCards.TryGetValue(rr.Semantic, out var card))
-                    card.SetItems(rr.Items ?? new List<AdapterRunner.CollectionItem>(), rr.Ok, rr.Error);
-            }
-        }
-        catch (Exception ex) { Log("[异常] " + ex.Message); }
-    }
-
-    /// <summary>
-    /// 按容器宽度重排卡片网格。
-    ///
-    /// 只在「列数变化」时重建控件；纯宽度变化只更新行高。
-    /// 之前每次 resize 都 Controls.Clear() 再全部 Add，
-    /// 拖窗口时 60fps 等于每秒重建 60 次全部控件，肉眼可见卡顿——
-    /// 而且重建会丢失输入框里正在输入的内容。
-    /// </summary>
-    private void RelayoutGrid(TableLayoutPanel grid)
-    {
-        if (grid == null || grid.IsDisposed) return;
-        int w = _patchHost.ClientSize.Width - _patchHost.Padding.Horizontal;
-        if (w < 200) return;
-
-        // 集合卡片一行要放「名字+数值+输入框+应用」，实测 380px 才不裁名字。
-        const int minCol = 380;
-        int cols = Math.Max(1, w / minCol);
-        if (cols > 2) cols = 2;
-
-        var cards = new List<Control>();
-        cards.AddRange(_cards.Values);
-        cards.AddRange(_collectionCards.Values);
-        if (cards.Count == 0) return;
-
-        int rows = (cards.Count + cols - 1) / cols;
-
-        // 结构没变（列数相同、子控件数量相同）就跳过重建
-        bool structureSame = grid.ColumnCount == cols
-                          && grid.RowCount == rows
-                          && grid.Controls.Count == cards.Count;
-
-        grid.SuspendLayout();
-        try
-        {
-            if (!structureSame)
-            {
-                grid.Controls.Clear();
-                grid.ColumnStyles.Clear();
-                grid.RowStyles.Clear();
-                grid.ColumnCount = cols;
-                for (int i = 0; i < cols; i++)
-                    grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / cols));
-
-                grid.RowCount = rows;
-                for (int i = 0; i < rows; i++)
-                    grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 190));
-
-                for (int i = 0; i < cards.Count; i++)
-                    grid.Controls.Add(cards[i], i % cols, i / cols);
-            }
-
-            // 行高每轮都按内容重算：集合卡片的条目数会变
-            for (int i = 0; i < rows && i < grid.RowStyles.Count; i++)
-            {
-                int maxH = 0;
-                for (int k = i * cols; k < Math.Min((i + 1) * cols, cards.Count); k++)
-                {
-                    int h = cards[k] is CollectionCard cc ? cc.RequiredHeight : cards[k].Height;
-                    maxH = Math.Max(maxH, h);
-                }
-                grid.RowStyles[i].Height = Math.Max(maxH + 8, 190);
-            }
-        }
-        finally
-        {
-            grid.ResumeLayout(true);
-        }
-    }
 
     /// <summary>异步刷新全部数值（合并成 2 次往返，不阻塞 UI）。</summary>
     private bool _refreshing;
 
+    /// <summary>
+    /// 刷新数值：读全部语义，把结果交给 GameView 渲染。
+    ///
+    /// 与旧实现的区别：旧版在这里直接操作 _cards / _collectionCards 两套字典，
+    /// 逐个控件 SetValue / SetItems，129 行里一半是状态判断和错误分类。
+    /// 现在只剩「读 → 判状态 → 交给视图」三步，错误分类也归到一处。
+    /// </summary>
     private async Task RefreshValuesAsync()
     {
         if (_adapter == null) return;
-        // 防重入：快速连点会并发建立 CDP 连接，前一次未完成不再发起（ui-design.md：长任务期间禁用冲突操作）
         if (_refreshing) { Log("刷新进行中，请稍候…"); return; }
         _refreshing = true;
 
-        // 必须用 try/finally 释放标志：异常路径若提前 return，
-        // 标志会永久为 true，之后再也刷新不了。
         try
         {
-            // 「刷新数值」= 用户主动要求重新定位存档。
-            // 清掉定位缓存，让下一次读取重新扫描（读档、换档后走这条）。
+            // 「刷新数值」= 用户主动要求重新定位存档，清掉缓存强制重扫
             SaveLocator.Invalidate();
 
             var adapter = _adapter;
@@ -1541,146 +1323,92 @@ internal sealed class GuiForm : Form
             }
             catch (Exception ex)
             {
-                // 这里的 ex 是连接级失败（如端口没开），同样要压短：
-                // 完整信息只在日志出现一次，卡片上只给一句原因。
-                string shortMsg = ShortenError(ex.Message);
-                foreach (var card in _cards.Values)
-                    card.SetValue(null, false, shortMsg);
                 Log("[错误] 读取失败：" + ex.Message.Replace("\n", " "));
                 SetGameStatePill(GameState.ReadFailed);
+                _gameView.SetEmpty("读取失败", "点「刷新数值」重试，或确认游戏已启动");
                 return;
             }
 
-                // 全失败时自动重试一次：切换游戏、读档、游戏刚重启都会让
-                // 上一次的定位缓存失效。清缓存重扫通常能直接恢复，
-                // 不必让用户自己去点「刷新数值」。
-                if (results.Count > 0 && results.Values.All(x => !x.Ok))
-                {
-                    Log("[重试] 全部读取失败，清定位缓存后重试一次…");
-                    SaveLocator.Invalidate();
-                    results = await Task.Run(() => AdapterRunner.ReadAll(adapter));
-                }
-
-            int ok = 0, fail = 0;
-            string firstError = null;
-
-            foreach (var kv in results)
+            // 全失败时清缓存重试一次：切游戏/读档/重启都会让上次的定位失效
+            if (results.Count > 0 && results.Values.All(x => !x.Ok))
             {
-                // 集合语义走另一个字典：员工列表这类数据一张卡片里有 N 行，
-                // 不能按单值卡片的 SetValue 处理，必须走 SetItems 重建行。
-                if (_collectionCards.TryGetValue(kv.Key, out var ccard))
-                {
-                    ccard.SetItems(kv.Value.Items ?? new List<AdapterRunner.CollectionItem>(),
-                                   kv.Value.Ok, ShortenError(kv.Value.Error));
-                    if (kv.Value.Ok) ok++;
-                    else { firstError ??= kv.Value.Error; fail++; }
-                    continue;
-                }
-
-                if (!_cards.TryGetValue(kv.Key, out var card)) continue;
-
-                if (kv.Value.Ok)
-                {
-                    card.SetValue(kv.Value.Value, true);
-                    ok++;
-                }
-                else
-                {
-                    // 卡片上只显示简短原因，完整错误统一在日志里出现一次，
-                    // 否则同一个连接失败会在 11 张卡片上重复 11 遍（实测截图确认过）。
-                    // 游戏未启动不是错误，用中性样式提示
-                bool neutral = kv.Value.Error != null && kv.Value.Error.Contains("找不到进程");
-                card.SetValue(null, false, ShortenError(kv.Value.Error), neutral);
-                    firstError ??= kv.Value.Error;
-                    fail++;
-                }
+                Log("[重试] 全部读取失败，清定位缓存后重试一次…");
+                SaveLocator.Invalidate();
+                results = await Task.Run(() => AdapterRunner.ReadAll(adapter));
             }
 
-            if (fail == 0)
+            int ok = results.Values.Count(x => x.Ok);
+            int fail = results.Count - ok;
+
+            if (ok == 0)
             {
-                Log($"已刷新数值：成功 {ok}");
-            }
-            else if (ok > 0)
-            {
-                // 部分成功 = 已连上，但有些值不在当前场景（如未开局时的局内数值）。
-                // 这不是错误，用警告色而非危险色，避免使用者误判连接断了。
-                Log($"已刷新数值：成功 {ok}，{fail} 项不在当前场景");
-            }
-            else
-            {
-                Log($"已刷新数值：失败 {fail} 项");
-                if (firstError != null) Log("[错误] " + firstError.Replace("\n", " "));
-                // 全失败才可能是连接问题，但要靠错误内容区分：
-                // 若是"无实例/不在此场景"，仍是连上了只是不在局内。
-                bool sceneOnly = firstError != null
-                    && (firstError.Contains("无实例") || firstError.Contains("不在此场景"));
-                if (sceneOnly)
+                // 区分「游戏没开」与「真的读不到」——前者是中性状态，不该报红
+                bool notRunning = results.Values.Any(x =>
+                    x.Error != null && x.Error.Contains("找不到进程"));
+
+                if (notRunning)
                 {
-                    Log("[提示] 已连接，但当前不在对局内。进入游戏后点「刷新数值」。");
+                    Log("[提示] 游戏未启动。先启动游戏，再点「刷新数值」。");
                     SetGameStatePill(GameState.NotRunning);
+                    _gameView.SetEmpty("游戏未运行", "先启动游戏，再点「刷新数值」读取存档");
                 }
                 else
                 {
+                    string first = results.Values.Select(x => x.Error).FirstOrDefault(e => e != null);
+                    Log("[错误] " + (first ?? "读取失败"));
                     SetGameStatePill(GameState.ReadFailed);
+                    _gameView.SetEmpty("读取失败", ShortenError(first));
                 }
+                return;
             }
+
+            // 成功（含部分成功）：交给视图
+            SetGameStatePill(GameState.Running);
+            _gameView.SetData(adapter, results);
+
+            if (fail == 0) Log($"已刷新数值：成功 {ok}");
+            else Log($"已刷新数值：成功 {ok}，{fail} 项不在当前场景");
         }
         finally
         {
             _refreshing = false;
-
-            // 集合卡片填充后高度会变化，必须重排一次网格，
-            // 否则行高停留在初始值，卡片被裁掉看不见。
-            foreach (Control c in _patchHost.Controls)
-            {
-                if (c is not TableLayoutPanel tlp) continue;
-                tlp.SuspendLayout();
-                // 先让每张卡按内容确认自己的高度，再按最大值设行高。
-                // 少了这一步，行高会是填充数据之前的旧值，
-                // 表现为 10 个员工只显示 3 行、其余被裁掉。
-                foreach (Control card in tlp.Controls) card.PerformLayout();
-                RelayoutGrid(tlp);
-                tlp.ResumeLayout(true);
-            }
         }
     }
 
-    /// <summary>同一语义的写入防重入：CDP 写超时可达 30 秒，连点不能并发写两次。</summary>
     private readonly HashSet<string> _writing = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// 写入单个语义。必须走后台线程：CDP 是同步阻塞 IO（超时 30 秒），
     /// 在 UI 线程执行会让窗口冻结——游戏卡顿时点任何卡片都假死。
     /// </summary>
-    private async Task ApplyValueAsync(string semantic, string raw)
+    /// <summary>GameView 提交单值写入。</summary>
+    private async Task SubmitValueAsync(string semantic, string raw)
     {
         if (_adapter == null) return;
-        if (!_writing.Add(semantic)) { Log($"{Semantics.Display(semantic)} 正在写入，请稍候…"); return; }
-        var adapter = _adapter;
-        try
-        {
-            var r = await Task.Run(() => AdapterRunner.Write(adapter, semantic, raw, dryRun: false));
-            if (r.Ok)
-            {
-                Log($"{Semantics.Display(semantic)}: {r.Before} → {r.After}" + (r.Realtime ? "  [实时]" : "  [需重载]"));
-                if (_cards.TryGetValue(semantic, out var card))
-                    card.SetValue(r.After, true);
-            }
-            else
-            {
-                Log($"[失败] {Semantics.Display(semantic)}: {r.Error}");
-                if (_cards.TryGetValue(semantic, out var card))
-                    card.SetValue(null, false, r.Error);
-            }
-        }
-        catch (Exception ex)
-        {
-            Log("[错误] " + ex.Message);
-        }
-        finally
-        {
-            _writing.Remove(semantic);
-        }
+
+        var r = await Task.Run(() => AdapterRunner.Write(_adapter, semantic, raw, dryRun: false));
+        if (r == null) return;
+
+        if (r.Ok) Log($"{Semantics.Display(semantic)}: {r.Before} → {r.After}");
+        else Log("[错误] " + r.Error);
+
+        // 写成功后重读，让界面显示实际值而不是猜测值
+        if (r.Ok) await RefreshValuesAsync();
+    }
+
+    /// <summary>GameView 提交集合条目写入。</summary>
+    private async Task SubmitEntryAsync(string semantic, int entryId, string raw)
+    {
+        if (_adapter == null) return;
+
+        var r = await Task.Run(() =>
+            AdapterRunner.Write(_adapter, semantic, $"{entryId}={raw}", dryRun: false));
+        if (r == null) return;
+
+        if (r.Ok) Log($"{Semantics.Display(semantic)}：{r.Before} → {r.After}");
+        else Log("[错误] " + r.Error);
+
+        if (r.Ok) await RefreshValuesAsync();
     }
 
     /// <summary>「回满」：取 FillFrom 指向的语义当前值作为目标。读取走后台线程。</summary>
@@ -1708,43 +1436,7 @@ internal sealed class GuiForm : Form
             return;
         }
 
-        await ApplyValueAsync(semantic, target);
-    }
-
-    private async Task ToggleValueAsync(string semantic, bool on, bool persist)
-    {
-        if (_adapter == null) return;
-        var b = _adapter.FindBinding(semantic);
-        double target = on ? (b?.OnValue ?? 1) : 0;
-        await ApplyValueAsync(semantic, target.ToString("0"));
-
-        // 持久监控：只有用户显式勾选且开关为开时才启动
-        StopWatcher(semantic);
-
-        if (on && persist)
-        {
-            var w = new PersistentWatcher(_adapter, semantic, target);
-            w.Notified += msg => Log($"[持久] {Semantics.Display(semantic)}：{msg}");
-            // 监控静默死亡是挂机场景最疼的失败：日志区收起时用户不知道盾没了。
-            // 停止走系统托盘气泡，绕开日志可见性。
-            w.Stopped += reason =>
-            {
-                try
-                {
-                    BeginInvoke(() => _tray.ShowBalloonTip(3000, "持久监控停止",
-                        $"{Semantics.Display(semantic)}：{reason}", ToolTipIcon.Warning));
-                }
-                catch (ObjectDisposedException) { }
-                catch (InvalidOperationException) { }
-            };
-            w.Start();
-            _watchers[semantic] = w;
-            Log($"[持久] {Semantics.Display(semantic)} 监控已启动（每 1 秒检查，退出对局自动停止）");
-        }
-        else if (on)
-        {
-            Log($"{Semantics.Display(semantic)} 已开启（非持久，被打掉后不会自动补回）");
-        }
+        await SubmitValueAsync(semantic, target);
     }
 
     /// <summary>停止并移除某个语义的持久监控。</summary>
