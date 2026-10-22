@@ -43,11 +43,8 @@ internal sealed class GuiForm : Form
     private readonly SingleInstanceGuard _single;
 
     // 顶栏
-    private readonly FlatButton _attachBtn = new();
-    private readonly FlatButton _refreshBtn = new();
-    private readonly FlatButton _settingsBtn = new();
-    private readonly FlatButton _backBtn = new();
-    private readonly Label _updateDot = new();
+    /// <summary>顶栏（独立控件，见 Shell/TopBar.cs）。</summary>
+    private Shell.TopBar _topBar;
     private readonly Label _gameTitle = new();
     private readonly Label _gameSubtitle = new();
     private readonly Badge _gameStatePill = new();
@@ -80,7 +77,6 @@ internal sealed class GuiForm : Form
     private Pages.GameView _gameView;
 
     /// <summary>日志抽屉高度（收起时为 0）。</summary>
-    private const int LogDrawerHeight = 180;
 
     public static int Run(string skillRoot, bool startBackground = false)
     {
@@ -198,11 +194,7 @@ internal sealed class GuiForm : Form
     /// </summary>
     private void ShowUpdateDot(string version)
     {
-        if (_updateDot == null) return;
-
-        _updateDot.Text = $"● 新版本 {version}";
-        _updateDot.Visible = true;
-        _updateDot.ForeColor = Tokens.Danger;
+        _topBar?.ShowUpdateDot(version);
     }
 
     /// <summary>点击红点：打开更新公告。</summary>
@@ -217,8 +209,8 @@ internal sealed class GuiForm : Form
         if (dlg.ReadyToRestart) Application.Exit();
 
         // 用户可能选了"跳过此版本"，那就把红点收掉
-        if (prefs.IsSkipped(_pendingUpdate.Version) && _updateDot != null)
-            _updateDot.Visible = false;
+        if (prefs.IsSkipped(_pendingUpdate.Version))
+            _topBar?.HideUpdateDot();
     }
 
 
@@ -264,127 +256,20 @@ internal sealed class GuiForm : Form
 
     private Control BuildTopBar()
     {
-        var bar = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Tokens.Surface,
-            Padding = new Padding(Tokens.S5, 0, Tokens.S5, 0),
-            Margin = new Padding(0)
-        };
-        bar.Paint += (_, e) =>
-        {
-            using var pen = new Pen(Tokens.Border, 1f);
-            e.Graphics.DrawLine(pen, 0, bar.Height - 1, bar.Width, bar.Height - 1);
-        };
+        // 顶栏已抽成独立控件，这里只负责实例化、接事件、挂载。
+        _topBar = new Shell.TopBar { Dock = DockStyle.Fill };
 
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 5,
-            RowCount = 1,
-            BackColor = Tokens.Surface,
-            Margin = new Padding(0)
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // logo+标题
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); // 弹性留白
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 徽标
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 徽标
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 按钮组
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _topBar.LaunchRequested   += () => _ = LaunchOrRefreshAsync();
+        _topBar.RefreshRequested  += () => { if (_adapter != null) _ = RefreshValuesAsync(); };
+        _topBar.SettingsRequested += OpenSettings;
+        _topBar.BackRequested     += ShowHomePage;
+        _topBar.UpdateRequested   += OpenPendingUpdate;
 
-        // 产品标识：圆角方块 + 名称，参考 DisplayControl 顶栏
-        var brand = new Panel
-        {
-            Width = 210,
-            Height = Tokens.TopBarHeight,
-            BackColor = Tokens.Surface,
-            Margin = new Padding(0),
-            Anchor = AnchorStyles.Left
-        };
-        brand.Paint += (_, e) =>
-        {
-            var g = e.Graphics;
-            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            var box = new Rectangle(0, (brand.Height - 28) / 2, 28, 28);
-            using (var path = Draw.RoundedRect(box, 7))
-            using (var b = new SolidBrush(Tokens.Accent))
-                g.FillPath(b, path);
-            Draw.TextGdi(g, "G", Tokens.FontBodyStrong, Tokens.TextOnAccent, box, HorizontalAlignment.Center);
+        _topBar.SetBackVisible(false);
+        _topBar.SetLaunchEnabled(false);
+        _topBar.SetRefreshEnabled(false);
 
-            var nameRect = new Rectangle(38, 0, brand.Width - 38, brand.Height);
-            Draw.Text(g, "GameTrainer", Tokens.FontSection, Tokens.TextPrimary, nameRect);
-        };
-
-
-
-        var actions = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
-            BackColor = Tokens.Surface,
-            Margin = new Padding(0),
-            Anchor = AnchorStyles.Right
-        };
-
-        // 适配包模式：不需要「附加」，改为「启动游戏 / 刷新数值」
-        _attachBtn.Text = "启动游戏";
-        _attachBtn.AccessibleName = _attachBtn.Text;
-        _attachBtn.Kind = ButtonKind.Primary;
-        _attachBtn.Width = 116;
-        _attachBtn.Margin = new Padding(0, 0, Tokens.S2, 0);
-        _attachBtn.Click += (_, _) => _ = LaunchOrRefreshAsync();
-
-        // 次要样式而非危险红：红色保留给破坏性操作，「刷新」是安全操作。
-        // 选中适配包后才启用——之前它继承旧「全部回滚」按钮的启用逻辑，
-        // 在适配包（推荐路径）下永远禁用，用户无法手动刷新。
-        _refreshBtn.Text = "刷新数值";
-        _refreshBtn.AccessibleName = _refreshBtn.Text;
-        _refreshBtn.Kind = ButtonKind.Secondary;
-        _refreshBtn.Width = 104;
-        _refreshBtn.Margin = new Padding(0, 0, Tokens.S2, 0);
-        _refreshBtn.Enabled = false;
-        _refreshBtn.Click += (_, _) => { if (_adapter != null) _ = RefreshValuesAsync(); };
-
-        _settingsBtn.Text = "设置";
-        _settingsBtn.AccessibleName = _settingsBtn.Text;
-        _settingsBtn.Width = 76;
-        _settingsBtn.Margin = new Padding(0);
-        _settingsBtn.Click += (_, _) => OpenSettings();
-
-        // 返回游戏库：游戏页是首页的下一级，必须有一眼可见的返回入口
-        // （ui-design.md：层级浏览要能回到上一级，不能只能靠重启程序）。
-        _backBtn.Text = "← 游戏库";
-        _backBtn.AccessibleName = "返回游戏库";
-        _backBtn.Kind = ButtonKind.Secondary;
-        _backBtn.Width = 96;
-        _backBtn.Margin = new Padding(0, 0, Tokens.S2, 0);
-        _backBtn.Click += (_, _) => ShowHomePage();
-
-        _updateDot.Text = "";
-        _updateDot.Visible = false;
-        _updateDot.AutoSize = true;
-        _updateDot.Font = Tokens.FontCaption;
-        _updateDot.ForeColor = Tokens.Danger;
-        _updateDot.Cursor = Cursors.Hand;
-        _updateDot.TextAlign = ContentAlignment.MiddleRight;
-        _updateDot.Margin = new Padding(0, 0, Tokens.S2, 0);
-        _updateDot.Padding = new Padding(0, 0, 0, 0);
-        _updateDot.Click += (_, _) => OpenPendingUpdate();
-
-        actions.Controls.Add(_updateDot);
-        actions.Controls.Add(_backBtn);
-        actions.Controls.Add(_attachBtn);
-        actions.Controls.Add(_refreshBtn);
-        actions.Controls.Add(_settingsBtn);
-
-        layout.Controls.Add(brand, 0, 0);
-        // 第 1 列是弹性留白，不放控件
-        layout.Controls.Add(actions, 4, 0);
-
-        bar.Controls.Add(layout);
-        return bar;
+        return _topBar;
     }
 
     private Control BuildBody()
@@ -510,8 +395,8 @@ internal sealed class GuiForm : Form
     /// </summary>
     private void SetGameChromeVisible(bool visible)
     {
-        foreach (Control c in new Control[] { _attachBtn, _refreshBtn })
-            if (c != null) c.Visible = visible;
+        _topBar?.SetLaunchEnabled(visible);
+        _topBar?.SetBackVisible(visible);
 
         if (!visible)
         {
@@ -570,7 +455,7 @@ internal sealed class GuiForm : Form
         _adapter = a;
         _profile = null;
         UpdateStatusForAdapter(a);
-        _refreshBtn.Enabled = true;
+        _topBar?.SetRefreshEnabled(true);
         Log($"已选择适配包：{a.Id}（{a.Bindings.Count} 个数值）");
 
         _ = RefreshValuesAsync();
@@ -786,7 +671,7 @@ internal sealed class GuiForm : Form
         _logCard.Title = "运行日志";
         _logCard.Dock = DockStyle.Fill;
         _logCard.Margin = new Padding(0);
-        _logCard.Height = LogDrawerHeight;
+        _logCard.Height = _logDrawerHeight;
 
         _logPad = new Panel
         {
@@ -830,6 +715,7 @@ internal sealed class GuiForm : Form
         // 不用 Dock 也不按 TableLayout：两者在嵌套时都会出现"某个子控件完全不渲染"。
         // 改成显式 Resize 里算绝对位置，逻辑一眼可见，出问题也好定位。
         stack.Controls.Add(_gameView);
+        stack.Controls.Add(BuildLogResizeHandle());   // 日志高度可拖
         stack.Controls.Add(_logCard);
 
         _logCard.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
@@ -892,8 +778,8 @@ internal sealed class GuiForm : Form
         }
 
         _launching = true;
-        _attachBtn.Enabled = false;
-        _refreshBtn.Enabled = false;
+        _topBar?.SetLaunchEnabled(false);
+        _topBar?.SetRefreshEnabled(false);
         try
         {
             Log($"正在启动 {adapter.Name}…");
@@ -902,7 +788,7 @@ internal sealed class GuiForm : Form
             {
                 Log("启动成功，正在读取数值…");
                 UpdateStatusForAdapter(adapter);
-                _refreshBtn.Enabled = true;
+                _topBar?.SetRefreshEnabled(true);
                 await RefreshValuesAsync();
             }
             else
@@ -913,7 +799,7 @@ internal sealed class GuiForm : Form
         finally
         {
             _launching = false;
-            _attachBtn.Enabled = true;
+            _topBar?.SetLaunchEnabled(true);
         }
     }
 
@@ -947,29 +833,54 @@ internal sealed class GuiForm : Form
     /// </summary>
     private void ToggleLogCollapsed(Panel logPad)
     {
+        // 先记住当前高度，再翻转状态。
+        //
+        // 真 bug：原来先翻转 _logCollapsed，然后用翻转后的状态算 from，
+        // 于是 from 和 to 取到同一侧的值，动画起止点相同，一帧就结束——
+        // 表现就是"收起时一跳就没了"（用户反馈）。
+        int currentH = _logCard.Height;
+        int targetH;
+
         _logCollapsed = !_logCollapsed;
+        targetH = _logCollapsed ? LogHeaderOnlyHeight : _logDrawerHeight;
+
         logPad.Visible = !_logCollapsed;
         _logCard.ActionText = _logCollapsed ? "展开" : "收起";
         _logCard.Invalidate();
-
-        int from = _logCollapsed ? LogDrawerHeight : LogHeaderOnlyHeight;
-        int to = _logCollapsed ? LogHeaderOnlyHeight : LogDrawerHeight;
 
         Animator.Run(_logCard, "log-drawer", Tokens.AnimSlow, raw =>
         {
             if (_logCard.IsDisposed) return false;
 
-            _logCard.Height = Easing.LerpInt(from, to, Easing.EaseInOut(raw));
-
-            // 必须跟着重排：日志高度变了，内容区要相应让出/收回空间。
-            // 原来只改 _logCard.Height 不重排，日志展开后会盖在内容区上，
-            // 表现为"展开日志就看不到修改项了"（用户反馈）。
+            _logCard.Height = Easing.LerpInt(currentH, targetH, Easing.EaseInOut(raw));
             RelayoutGameStack();
-
             return true;
         });
 
         Log(_logCollapsed ? "日志区已收起，点「展开」恢复。" : "日志区已展开。");
+    }
+
+    /// <summary>
+    /// 日志抽屉当前高度。
+    /// 展开时用用户拖出来的高度，收起时只留标题栏。
+    /// </summary>
+    private int _logDrawerHeight = 180;
+
+    /// <summary>日志抽屉的默认高度。</summary>
+    private const int DefaultLogDrawerHeight = 180;
+
+    /// <summary>日志抽屉最小高度（再小就看不到内容）。</summary>
+    private const int MinLogDrawerHeight = 120;
+
+    /// <summary>日志抽屉最大高度：不超过内容区的一半。</summary>
+    private int MaxLogDrawerHeight
+    {
+        get
+        {
+            if (_contentGrid == null) return DefaultLogDrawerHeight * 2;
+            int h = _contentGrid.ClientSize.Height - _contentGrid.Padding.Vertical;
+            return Math.Max(MinLogDrawerHeight + 40, h / 2);
+        }
     }
 
     /// <summary>日志收起时只留标题栏的高度。</summary>
@@ -994,11 +905,97 @@ internal sealed class GuiForm : Form
         int h = stack.ClientSize.Height - padT - padB;
         if (w <= 0 || h <= 0) return;
 
-        int logH = _logCollapsed ? LogHeaderOnlyHeight : _logCard.Height;
-        int viewH = Math.Max(80, h - logH - Tokens.S3);
+        // 展开时用 _logDrawerHeight（可被拖动改变），收起时只留标题栏
+        int logH = _logCollapsed ? LogHeaderOnlyHeight : _logDrawerHeight;
+
+        // 拖动把手夹在内容区与日志之间，收起时不占空间
+        int handleH = _logCollapsed ? 0 : LogResizeHandleHeight;
+
+        int viewH = Math.Max(80, h - logH - handleH - Tokens.S3);
 
         _gameView.SetBounds(padL, padT, w, viewH);
-        _logCard.SetBounds(padL, padT + viewH + Tokens.S3, w, logH);
+
+        if (_logResizeHandle != null)
+        {
+            _logResizeHandle.Visible = !_logCollapsed;
+            _logResizeHandle.SetBounds(padL, padT + viewH + Tokens.S3, w, handleH);
+        }
+
+        _logCard.SetBounds(padL, padT + viewH + Tokens.S3 + handleH, w, logH);
+    }
+
+    /// <summary>拖动把手高度。太细不好抓，太粗占空间。</summary>
+    private const int LogResizeHandleHeight = 8;
+
+    /// <summary>日志抽屉上方的拖动把手。</summary>
+    private Control _logResizeHandle;
+
+    /// <summary>拖动中：记录按下时的鼠标位置与当时的抽屉高度。</summary>
+    private bool _draggingLog;
+    private int _dragStartY;
+    private int _dragStartHeight;
+
+    /// <summary>
+    /// 创建拖动把手。鼠标在它上面按下并上下拖，就能调节日志抽屉高度。
+    ///
+    /// 为什么单独做一个把手而不是让整张卡片可拖：
+    /// 卡片里要选文字、点「展开」按钮，整卡可拖会误触。
+    /// </summary>
+    private Control BuildLogResizeHandle()
+    {
+        var handle = new Panel
+        {
+            BackColor = Tokens.PageBack,
+            Cursor = Cursors.SizeNS,
+            Height = LogResizeHandleHeight
+        };
+
+        handle.Paint += (_, e) =>
+        {
+            // 中间画一小段短横线，提示这里可以拖
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            const int w = 40;
+            int x = (handle.Width - w) / 2;
+            int y = handle.Height / 2;
+
+            using var pen = new Pen(Tokens.BorderControl, 2f)
+            {
+                StartCap = System.Drawing.Drawing2D.LineCap.Round,
+                EndCap = System.Drawing.Drawing2D.LineCap.Round
+            };
+            g.DrawLine(pen, x, y, x + w, y);
+        };
+
+        handle.MouseDown += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Left) return;
+            _draggingLog = true;
+            _dragStartY = Control.MousePosition.Y;
+            _dragStartHeight = _logDrawerHeight;
+        };
+
+        handle.MouseMove += (_, _) =>
+        {
+            if (!_draggingLog) return;
+
+            // 向上拖 = 变高
+            int dy = _dragStartY - Control.MousePosition.Y;
+            int target = Math.Clamp(_dragStartHeight + dy,
+                MinLogDrawerHeight, MaxLogDrawerHeight);
+
+            if (target == _logDrawerHeight) return;
+
+            _logDrawerHeight = target;
+            _logCard.Height = target;
+            RelayoutGameStack();
+        };
+
+        handle.MouseUp += (_, _) => _draggingLog = false;
+
+        _logResizeHandle = handle;
+        return handle;
     }
 
 
@@ -1285,7 +1282,7 @@ internal sealed class GuiForm : Form
                 _adapter = a;
                 _profile = null;
                 UpdateStatusForAdapter(a);
-                _refreshBtn.Enabled = true;
+                _topBar?.SetRefreshEnabled(true);
                 Log($"已选择适配包：{a.Id}（{a.Bindings.Count} 个数值）");
                 _ = RefreshValuesAsync();
                 break;

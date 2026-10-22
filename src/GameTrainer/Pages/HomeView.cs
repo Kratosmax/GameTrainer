@@ -255,10 +255,15 @@ internal sealed class HomeView : Control
         //   窗口窄 -> 列数少，卡片自动变窄，不会挤成一条缝
         int cardH = 140;
         int gap = Tokens.S3 * 2;
-        // 用最小可读宽度（而不是原固定宽度）算列数：
-        // 卡片窄于 260 时姓名会被省略号吃掉，所以 260 是列数的下限依据。
+        // 列数 = min(按宽度能放下的列数, 实际卡片数)。
+        //
+        // 只按宽度算列数是个陷阱：1480px 窗口算出 5 列，
+        // 但只有 2 个游戏时，2 张卡各占 267px、总共 558px，
+        // 右边 874px 全是空白——这正是用户说的"浪费空间"。
+        // 用 min() 之后，2 个游戏就是 2 列、每列撑满一半宽度。
         const int MinCardW = 260;
-        int cols = Math.Max(1, (Width - pad * 2 + gap) / (MinCardW + gap));
+        int colsByWidth = Math.Max(1, (Width - pad * 2 + gap) / (MinCardW + gap));
+        int cols = Math.Min(colsByWidth, Math.Max(1, _items.Count));
 
         int index = 0;
         int rowY = y - (int)_scrollY;
@@ -350,8 +355,10 @@ internal sealed class HomeView : Control
     {
         int col = index % cols;
 
+        // 均分可用宽度，不再设下限兜底。
+        // cols 已经不超过实际卡片数，所以这里均分不会把卡片压得过窄。
         int avail = Width - pad * 2;
-        int cardW = Math.Max(220, (avail - gap * (cols - 1)) / cols);
+        int cardW = (avail - gap * (cols - 1)) / cols;
 
         var rc = new Rectangle(pad + col * (cardW + gap), rowY, cardW, cardH);
         it.Bounds = rc;

@@ -313,6 +313,7 @@ internal sealed class SettingsForm : Form
             _barTitle.Text = "设置 · " + Sections[idx].Title;
         }
 
+        _sectionCount = 0;
         _flow.SuspendLayout();
         _flow.Controls.Clear();
 
@@ -340,19 +341,53 @@ internal sealed class SettingsForm : Form
         _flow.ClientSize.Width - _flow.Padding.Horizontal - 20);
 
     /// <summary>
-    /// 开启一个分组卡片。
+    /// 分区标题。
     ///
-    /// 原来 Title() 只是往滚动区塞一个加粗 Label，没有分组边界，
-    /// 整页看起来像一篇文章。现在它直接成为分组卡片的标题，
-    /// 后续 Body/Wrap/AddRow 都会挂进这一组，直到下一次 Title() 或页面结束。
+    /// 参照 PinNote 的设置页（SettingsPanel.xaml）：
+    /// 不做卡片分组，而是「分区标题 + 缩进内容 + 一条细线分隔」。
+    /// 设置项本来就密集，套卡片会让每块内容都被 24px 内边距和阴影包起来，
+    /// 一屏能看的信息量掉一半。
     ///
-    /// 返回 null 是刻意的：调用方不需要持有这个控件。
+    /// 之前的实现给每块都套了大圆角卡片，是过度设计。
     /// </summary>
     private Label Title(string text)
     {
-        BeginGroup(text);
-        return null;
+        EndGroup();   // 若上一个分组还开着，先收尾
+
+        // 分区之间用细线分隔，不用间距硬隔
+        if (_sectionCount > 0)
+        {
+            var line = new Panel
+            {
+                Height = 1,
+                BackColor = Tokens.Border,
+                Margin = new Padding(0, Tokens.S4, 0, Tokens.S4),
+                Tag = "full"
+            };
+            AddRow(line);
+            Gap(Tokens.S2);
+        }
+
+        _sectionCount++;
+
+        var l = new Label
+        {
+            Text = text,
+            Font = Tokens.FontSection,
+            ForeColor = Tokens.TextPrimary,
+            AutoSize = false,
+            Height = 28,
+            Width = ContentWidth,
+            Margin = new Padding(0, 0, 0, Tokens.S2),
+            TextAlign = ContentAlignment.MiddleLeft,
+            Tag = "full"
+        };
+        AddRow(l);
+        return l;
     }
+
+    /// <summary>当前页已有的分区数，用于决定是否画分隔线。</summary>
+    private int _sectionCount;
 
     /// <summary>
     /// 单行说明。文字变长时必须按实测高度换行，
@@ -485,8 +520,7 @@ internal sealed class SettingsForm : Form
 
     private void RenderGeneral()
     {
-        // ---- 分组：启动 ----
-        BeginGroup("启动");
+        Title("启动");
 
         var row = new Panel
         {
@@ -528,23 +562,18 @@ internal sealed class SettingsForm : Form
         _startupHint.Margin = new Padding(0);
         AddRow(_startupHint);
 
-        EndGroup();
-
-        // ---- 分组：窗口行为 ----
-        BeginGroup("窗口行为");
+        // ---- 窗口行为 ----
+        Title("窗口行为");
         Body("有启用中的修改时关闭窗口 → 询问「回滚并退出」/「直接退出」/「最小化到托盘」");
         Body("没有启用中的修改 → 直接退出");
         Wrap("首次最小化到托盘会弹一次气泡提示，之后按你的选择静默处理。"
            + "真正退出请用托盘菜单「全部回滚并退出」，或关闭时选择回滚。");
-        EndGroup();
-
-        // ---- 分组：界面材质 ----
-        BeginGroup("界面材质");
+        // ---- 界面材质 ----
+        Title("界面材质");
         Wrap("窗口在 Windows 11 上尝试 DWM Acrylic 全窗材质与系统圆角。"
            + "任一原生调用失败都会整体回退为不透明浅色表面，"
            + "不会留下「标题栏有材质、正文不透明」的混合状态。"
            + "当前系统：" + DescribeMaterial());
-        EndGroup();
     }
 
     private static string DescribeMaterial()
