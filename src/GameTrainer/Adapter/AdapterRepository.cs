@@ -1,232 +1,201 @@
-using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using GameTrainer.Core.Net;
 
 namespace GameTrainer.Adapter;
 
 /// <summary>
-/// 适配包仓库客户端：从 GitHub 仓库的 adapters/ 目录发现、下载、安装与卸载适配包。
+/// 适配包仓库 —— 从 GitHub 下载并安装适配包。
 ///
-/// 设计取舍：
-///   - 适配包是纯 JSON，不含可执行代码，因此不做签名，只用 SHA256 防传输损坏
-///   - 下载走与自动更新完全相同的代理解析（UpdateClient.ProxyHandler），
-///     用户配一次代理，两条链路都生效
-///   - 卸载只删 adapter.json 与同目录附带文件，不碰用户数据
+/// 修正历史问题：早期实现把 adapter.json 的全文内嵌在 index.json 里，
+/// 安装时只是把这个字符串写到磁盘，**根本没有下载**。
+/// 后果是索引文件随适配包数量线性膨胀（2 个包已 29KB），
+/// 而且新增/修改适配包必须重发索引，用户拿不到更新。
 ///
-/// 为什么用 GitHub Raw 而不是 Release 资产：
-/// 适配包会被频繁新增/修改，走 raw 可以单独更新某个包而不必发版。
+/// 现在的结构：
+///   index.json      —— 只列元数据（id / name / version / sha256 / 文件路径）
+///   adapters/&lt;id&gt;/adapter.json —— 真正的内容，安装时才按需下载
+///
+/// 下载走 NetworkGateway：按线路优先级拼 URL + 套 HTTP 代理。
 /// </summary>
 internal static class AdapterRepository
 {
-    /// <summary>仓库 raw 根地址。可被配置文件覆盖以便换镜像。</summary>
-    private static string RawRoot =>
-        Environment.GetEnvironmentVariable("GAMETRAINER_ADAPTER_RAW")
-        ?? "https://raw.githubusercontent.com/Kratosmax/GameTrainer/main/adapters";
+    /// <summary>仓库 raw 根地址。可用环境变量覆盖（本地测试用）。</summary>
+    private static string RawRoot
+    {
+        get
+        {
+            string env = Environment.GetEnvironmentVariable("GAMETRAINER_ADAPTER_RAW");
+            if (!string.IsNullOrWhiteSpace(env)) return env.TrimEnd('/');
 
-    /// <summary>仓库清单地址：列出所有可用适配包及其哈希。</summary>
+            return "https://raw.githubusercontent.com/Kratosmax/GameTrainer/main/adapters";
+        }
+    }
+
     private static string IndexUrl => $"{RawRoot}/index.json";
 
-    /// <summary>远端清单里的一项。</summary>
-    public sealed class RemoteAdapter
+    // ---------- 数据模型 ----------
+
+    /// <summary>索引里的一个适配包条目。只有元数据，没有内容。</summary>
+    internal sealed class RemoteAdapter
     {
-        [JsonPropertyName("id")]
-        public string Id { get; set; } = "";
+        [JsonPropertyName("id")] public string Id { get; set; } = "";
+        [JsonPropertyName("name")] public string Name { get; set; } = "";
+        [JsonPropertyName("version")] public string Version { get; set; } = "";
+        [JsonPropertyName("engine")] public string Engine { get; set; } = "";
+        [JsonPropertyName("summary")] public string Summary { get; set; } = "";
 
-        [JsonPropertyName("name")]
-        public string Name { get; set; } = "";
+        /// <summary>adapter.json 的 SHA256，防传输损坏。</summary>
+        [JsonPropertyName("sha256")] public string Sha256 { get; set; } = "";
 
-        /// <summary>适配包内容（adapter.json 的原始 JSON 字符串）。</summary>
-        [JsonPropertyName("json")]
-        public string Json { get; set; } = "";
-
-        /// <summary>该 JSON 的 SHA256（小写十六进制），用于防传输损坏。</summary>
-        [JsonPropertyName("sha256")]
-        public string Sha256 { get; set; } = "";
-
-        /// <summary>可选：README 文本，安装后一并写入。</summary>
-        [JsonPropertyName("readme")]
-        public string Readme { get; set; }
+        /// <summary>adapter.json 在仓库里的相对路径。空则按 id 推导。</summary>
+        [JsonPropertyName("path")] public string Path { get; set; } = "";
     }
 
-    public sealed class RemoteIndex
+    internal sealed class RemoteIndex
     {
-        [JsonPropertyName("version")]
-        public int Version { get; set; } = 1;
-
-        [JsonPropertyName("adapters")]
-        public List<RemoteAdapter> Adapters { get; set; } = new();
+        [JsonPropertyName("version")] public int Version { get; set; } = 1;
+        [JsonPropertyName("adapters")] public List<RemoteAdapter> Adapters { get; set; } = new();
     }
+
+    // ---------- 索引 ----------
 
     /// <summary>
-    /// 拉取远端清单。
-    ///
-    /// 失败时不抛异常给 UI：返回 null 并给出可读原因，
-    /// 让首页可以显示"离线，只能看已安装的游戏"而不是崩掉。
+    /// 拉取索引。失败时返回可读的错误原因，不抛异常。
     /// </summary>
-    public static async Task<(RemoteIndex Index, string Error)> FetchIndexAsync(CancellationToken ct = default)
+    public static async Task<(RemoteIndex Index, string Error)> FetchIndexAsync(
+        NetworkGateway gateway, CancellationToken ct = default)
     {
+        if (gateway == null) return (null, "网络未初始化");
+
+        var (index, error) = await gateway.GetJsonAsync<RemoteIndex>(IndexUrl, ct);
+        if (index == null) return (null, error ?? "索引解析失败");
+
+        index.Adapters ??= new List<RemoteAdapter>();
+        return (index, null);
+    }
+
+    // ---------- 安装 ----------
+
+    /// <summary>
+    /// 下载并安装一个适配包。
+    ///
+    /// 步骤：下载 adapter.json → 校验 SHA256 → 解析验证 → 原子写入。
+    /// 任何一步失败都不落盘，避免首页出现一个打不开的条目。
+    /// </summary>
+    public static async Task<(bool Ok, string Error)> InstallAsync(
+        string skillRoot, RemoteAdapter remote, NetworkGateway gateway, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(remote?.Id))
+            return (false, "清单项缺少 id");
+
+        if (gateway == null)
+            return (false, "网络未初始化");
+
+        // 内容地址：索引给了 path 就用它，否则按约定推导
+        string rel = string.IsNullOrWhiteSpace(remote.Path)
+            ? $"{remote.Id}/adapter.json"
+            : remote.Path.TrimStart('/');
+
+        string url = $"{RawRoot}/{rel}";
+
+        var (data, error) = await gateway.GetBytesAsync(url, ct);
+        if (data == null)
+            return (false, error);
+
+        // 哈希校验：只防传输损坏，不是安全边界
+        if (!string.IsNullOrWhiteSpace(remote.Sha256))
+        {
+            string actual = Sha256Hex(data);
+            if (!actual.Equals(remote.Sha256.Trim(), StringComparison.OrdinalIgnoreCase))
+                return (false, $"校验失败：期望 {remote.Sha256[..Math.Min(8, remote.Sha256.Length)]}… 实际 {actual[..8]}…");
+        }
+
+        // 安装前先确认能被适配包模型解析，
+        // 否则装进去之后首页会多出一个永远打不开的条目
+        GameAdapter parsed;
         try
         {
-            using var http = new HttpClient(UpdateClientProxyHandler())
-            {
-                Timeout = TimeSpan.FromSeconds(20)
-            };
-
-            string json = await http.GetStringAsync(IndexUrl, ct).ConfigureAwait(false);
-            var index = JsonSerializer.Deserialize<RemoteIndex>(json, JsonOpts);
-            if (index == null || index.Adapters.Count == 0)
-                return (null, "远端清单为空");
-
-            return (index, null);
-        }
-        catch (OperationCanceledException)
-        {
-            return (null, "已取消");
+            parsed = JsonSerializer.Deserialize<GameAdapter>(data, GameAdapter.JsonOpts)
+                     ?? throw new InvalidOperationException("解析结果为空");
         }
         catch (Exception ex)
         {
-            return (null, DescribeFetchError(ex));
+            return (false, "适配包格式无效：" + ex.Message.Split('\n')[0]);
         }
-    }
 
-    private static string DescribeFetchError(Exception ex)
-    {
-        string m = ex.Message;
-        if (m.Contains("timed out", StringComparison.OrdinalIgnoreCase) ||
-            m.Contains("timeout", StringComparison.OrdinalIgnoreCase))
-            return "连接超时。可在设置 → 网络里指定代理，或确认能访问 github.com";
+        string dir = Path.Combine(skillRoot, "adapters", remote.Id);
+        Directory.CreateDirectory(dir);
 
-        if (m.Contains("404"))
-            return "远端还没有适配包清单（adapters/index.json 不存在）";
+        string path = Path.Combine(dir, "adapter.json");
+        string tmp = path + ".tmp";
 
-        return m.Length > 120 ? m[..120] + "…" : m;
-    }
-
-    /// <summary>
-    /// 安装一个适配包到 adapters/&lt;id&gt;/adapter.json。
-    ///
-    /// 先校验哈希再落盘：哈希不符直接失败，不留下半个文件。
-    /// 写入用临时文件 + 替换，避免写一半断电留下坏 JSON。
-    /// </summary>
-    public static (bool Ok, string Error) Install(string skillRoot, RemoteAdapter remote)
-    {
         try
         {
-            if (string.IsNullOrWhiteSpace(remote.Id))
-                return (false, "清单项缺少 id");
-
-            if (string.IsNullOrWhiteSpace(remote.Json))
-                return (false, "清单项缺少内容");
-
-            // 哈希校验：只防传输损坏，不是安全边界
-            if (!string.IsNullOrWhiteSpace(remote.Sha256))
-            {
-                string actual = Sha256Hex(remote.Json);
-                if (!actual.Equals(remote.Sha256, StringComparison.OrdinalIgnoreCase))
-                    return (false, $"校验失败：期望 {remote.Sha256[..8]}… 实际 {actual[..8]}…");
-            }
-
-            // 安装前先确认是合法 JSON 且能被适配包模型解析，
-            // 否则装进去之后首页会多出一个永远打不开的条目
-            GameAdapter parsed;
-            try
-            {
-                parsed = JsonSerializer.Deserialize<GameAdapter>(remote.Json, GameAdapter.JsonOpts)
-                         ?? throw new InvalidOperationException("解析结果为空");
-            }
-            catch (Exception ex)
-            {
-                return (false, "适配包格式无效：" + ex.Message);
-            }
-
-            string dir = Path.Combine(skillRoot, "adapters", remote.Id);
-            Directory.CreateDirectory(dir);
-
-            string path = Path.Combine(dir, "adapter.json");
-            string tmp = path + ".tmp";
-            File.WriteAllText(tmp, remote.Json);
-            if (File.Exists(path)) File.Delete(path);
-            File.Move(tmp, path);
-
-            if (!string.IsNullOrWhiteSpace(remote.Readme))
-            {
-                try { File.WriteAllText(Path.Combine(dir, "README.md"), remote.Readme); }
-                catch { /* README 写失败不影响适配包可用 */ }
-            }
-
-            return (true, null);
+            File.WriteAllBytes(tmp, data);
+            File.Move(tmp, path, overwrite: true);
         }
         catch (Exception ex)
         {
-            return (false, ex.Message);
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+            return (false, "写入失败：" + ex.Message.Split('\n')[0]);
         }
+
+        return (true, null);
     }
 
+    // ---------- 卸载 ----------
+
     /// <summary>
-    /// 卸载适配包：删除目录下由安装器写入的文件。
-    /// 只删 adapter.json 与 README.md，保留用户可能放进去的其它文件。
+    /// 卸载适配包：只删安装器写入的文件，保留用户可能放进去的其它文件。
+    /// 目录空了才删目录。
     /// </summary>
     public static (bool Ok, string Error) Uninstall(string skillRoot, string adapterId)
     {
         try
         {
+            if (string.IsNullOrWhiteSpace(adapterId)) return (false, "id 为空");
+
             string dir = Path.Combine(skillRoot, "adapters", adapterId);
             if (!Directory.Exists(dir)) return (true, null);
 
-            foreach (string name in new[] { "adapter.json", "README.md" })
+            foreach (string f in new[] { "adapter.json", "README.md" })
             {
-                string p = Path.Combine(dir, name);
+                string p = Path.Combine(dir, f);
                 if (File.Exists(p)) File.Delete(p);
             }
 
-            // 目录空了才删，避免误删用户自己放的东西
-            if (!Directory.EnumerateFileSystemEntries(dir).Any())
+            if (Directory.GetFileSystemEntries(dir).Length == 0)
                 Directory.Delete(dir);
 
             return (true, null);
         }
         catch (Exception ex)
         {
-            return (false, ex.Message);
+            return (false, ex.Message.Split('\n')[0]);
         }
     }
 
-    /// <summary>已安装的适配包 ID 集合。</summary>
+    /// <summary>已安装的适配包 id 集合。</summary>
     public static HashSet<string> InstalledIds(string skillRoot)
     {
         var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        try
-        {
-            string root = Path.Combine(skillRoot, "adapters");
-            if (!Directory.Exists(root)) return set;
 
-            foreach (string dir in Directory.EnumerateDirectories(root))
-            {
-                if (File.Exists(Path.Combine(dir, "adapter.json")))
-                    set.Add(Path.GetFileName(dir));
-            }
+        string dir = Path.Combine(skillRoot, "adapters");
+        if (!Directory.Exists(dir)) return set;
+
+        foreach (string sub in Directory.GetDirectories(dir))
+        {
+            if (File.Exists(Path.Combine(sub, "adapter.json")))
+                set.Add(Path.GetFileName(sub));
         }
-        catch { }
+
         return set;
     }
 
-    public static string Sha256Hex(string text)
+    private static string Sha256Hex(byte[] data)
     {
-        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(text);
-        byte[] hash = SHA256.HashData(bytes);
-        return Convert.ToHexString(hash).ToLowerInvariant();
+        using var sha = System.Security.Cryptography.SHA256.Create();
+        return Convert.ToHexString(sha.ComputeHash(data)).ToLowerInvariant();
     }
-
-    private static readonly JsonSerializerOptions JsonOpts = new()
-    {
-        PropertyNameCaseInsensitive = true,
-        ReadCommentHandling = JsonCommentHandling.Skip,
-        AllowTrailingCommas = true
-    };
-
-    /// <summary>
-    /// 复用自动更新的代理解析，保证两条网络链路行为一致。
-    /// </summary>
-    private static HttpClientHandler UpdateClientProxyHandler()
-        => GameTrainer.Core.Updates.UpdateClient.ProxyHandler;
 }

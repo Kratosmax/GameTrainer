@@ -45,6 +45,17 @@ internal sealed class GuiForm : Form
     // 顶栏
     /// <summary>顶栏（独立控件，见 Shell/TopBar.cs）。</summary>
     private Shell.TopBar _topBar;
+
+    /// <summary>统一网络出口：线路拼接 + HTTP 代理。</summary>
+    private Core.Net.NetworkGateway _gateway;
+
+    /// <summary>
+    /// 取网络出口。设置变化后置空以重建。
+    /// 懒加载是因为构造期还没读设置。
+    /// </summary>
+    private Core.Net.NetworkGateway Gateway =>
+        _gateway ??= new Core.Net.NetworkGateway(
+            Core.Net.GithubRoutes.Load(), _prefs.HttpProxy);
     private readonly Label _gameTitle = new();
     private readonly Label _gameSubtitle = new();
     private readonly Badge _gameStatePill = new();
@@ -328,7 +339,7 @@ internal sealed class GuiForm : Form
         var installed = LoadInstalledAdapters();
         _homePage.Populate(installed, null, null);
 
-        var (index, error) = await AdapterRepository.FetchIndexAsync();
+        var (index, error) = await AdapterRepository.FetchIndexAsync(Gateway);
         if (index != null)
             _homePage.Populate(installed, index.Adapters, null);
         else
@@ -489,7 +500,7 @@ internal sealed class GuiForm : Form
     {
         Log($"[适配包] 开始下载 {remote.Name}…");
 
-        var (ok, error) = await Task.Run(() => AdapterRepository.Install(_skillRoot, remote));
+        var (ok, error) = await AdapterRepository.InstallAsync(_skillRoot, remote, Gateway);
         if (!ok)
         {
             Log($"[适配包] 下载失败：{error}");

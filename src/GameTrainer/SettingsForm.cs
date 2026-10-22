@@ -701,55 +701,120 @@ internal sealed class SettingsForm : Form
     /// 窗口拉宽时全部挤在左边 500px 内，右侧空白——用户反馈"根本拉不开"。
     /// 表格布局让内容列自动吃掉多余宽度。
     /// </summary>
+    /// <summary>
+    /// 网络设置 —— 两个独立模块。
+    ///
+    /// 1) GitHub 访问线路：域名拼接。每条线路是一个前缀，按优先级依次尝试。
+    ///    直连不拼接，前缀线路把地址拼在前缀后。
+    ///
+    /// 2) HTTP 网络代理：出口端口。与线路拼接是两个层次，
+    ///    线路挂了要换前缀，代理挂了要换端口，合成一个下拉框会让人无从排查。
+    ///
+    /// 两者可叠加：先按优先级选线路拼 URL，再经代理发出。
+    /// </summary>
     private void RenderNetworkSubsection()
     {
         var netTitle = Body("网络", Tokens.TextPrimary);
         netTitle.Font = Tokens.FontBodyStrong;
         AddRow(netTitle);
 
-        // 用 Wrap 而不是固定高度 Label：
-        // 固定 34px 会把两行文字裁成一行半（实测"常见本地端口"被切掉）。
-        Wrap("更新检查与适配包下载共用的出网方式。自动会依次尝试环境变量、系统代理与常见本地端口。");
+        Wrap("GitHub 资源分两层取用：先按优先级选线路拼接地址，再经 HTTP 代理发出。"
+           + "两者互不影响，可以只配其中一个。");
 
-        // ---- 出网方式 ----
-        var modeRow = MakeSettingRow("出网方式");
+        // ==================== 模块一：GitHub 访问线路 ====================
 
-        _proxyMode = new ComboBox
+        var routeTitle = Body("GitHub 访问线路", Tokens.TextPrimary);
+        routeTitle.Font = Tokens.FontBodyStrong;
+        routeTitle.Margin = new Padding(0, Tokens.S3, 0, Tokens.S2);
+        AddRow(routeTitle);
+
+        Wrap("10 到 1 按顺序尝试，0 表示禁用。同优先级按列表顺序。"
+           + "直连不拼接前缀，前缀线路把完整地址拼在前面。");
+
+        _routeList = new FlowLayoutPanel
         {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Font = Tokens.FontBody,
-            Dock = DockStyle.Fill,
-            Margin = new Padding(0, 2, Tokens.S2, 2),
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoSize = false,
+            Width = ContentWidth,
+            Height = 0,
             BackColor = Tokens.Surface,
-            ForeColor = Tokens.TextPrimary
+            Margin = new Padding(0, Tokens.S2, 0, Tokens.S2),
+            Tag = "full"
         };
-        _proxyMode.Items.AddRange(new object[] { "自动", "自定义", "强制直连" });
+        AddRow(_routeList);
 
-        string current = _prefs.HttpProxy ?? "auto";
-        if (current.Equals("direct", StringComparison.OrdinalIgnoreCase)) _proxyMode.SelectedIndex = 2;
-        else if (current.Equals("auto", StringComparison.OrdinalIgnoreCase) || current.Length == 0) _proxyMode.SelectedIndex = 0;
-        else _proxyMode.SelectedIndex = 1;
+        var routeButtons = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            AutoSize = true,
+            BackColor = Tokens.Surface,
+            Margin = new Padding(0, 0, 0, Tokens.S3)
+        };
+
+        var addRoute = new FlatButton
+        {
+            Text = "添加线路",
+            Kind = ButtonKind.Secondary,
+            Width = 100,
+            Height = 30,
+            Margin = new Padding(0, 0, Tokens.S2, 0)
+        };
+        addRoute.Click += (_, _) =>
+        {
+            _routes.Items.Add(new Core.Net.GithubRoute("https://", 5));
+            RebuildRouteRows();
+        };
+
+        var resetRoutes = new FlatButton
+        {
+            Text = "恢复默认",
+            Kind = ButtonKind.Secondary,
+            Width = 100,
+            Height = 30
+        };
+        resetRoutes.Click += (_, _) =>
+        {
+            _routes = Core.Net.GithubRoutes.Default();
+            RebuildRouteRows();
+        };
+
+        routeButtons.Controls.Add(addRoute);
+        routeButtons.Controls.Add(resetRoutes);
+        AddRow(routeButtons);
+
+        // ==================== 模块二：HTTP 网络代理 ====================
+
+        var proxyTitle = Body("HTTP 网络代理", Tokens.TextPrimary);
+        proxyTitle.Font = Tokens.FontBodyStrong;
+        proxyTitle.Margin = new Padding(0, Tokens.S3, 0, Tokens.S2);
+        AddRow(proxyTitle);
+
+        Wrap("可选。走这个出口访问网络，与上面的线路拼接是两层，可单独使用。"
+           + "不支持账号密码。");
+
+        var proxyRow = MakeSettingRow("代理地址");
 
         _proxyInput = new RoundedField
         {
             Dock = DockStyle.Fill,
-            Margin = new Padding(0, 2, 0, 2),
+            Margin = new Padding(0, 3, Tokens.S2, 3),
             BackColor = Tokens.Surface
         };
-        _proxyInput.Text = _proxyMode.SelectedIndex == 1 ? current : "";
-        _proxyInput.Enabled = _proxyMode.SelectedIndex == 1;
+        _proxyInput.Text = _prefs.HttpProxy ?? "";
 
-        _proxyMode.SelectedIndexChanged += (_, _) =>
+        var saveBtn = new FlatButton
         {
-            _proxyInput.Enabled = _proxyMode.SelectedIndex == 1;
-            SaveProxySetting();
+            Text = "保存",
+            Kind = ButtonKind.Secondary,
+            Width = 76,
+            Height = 30,
+            Anchor = AnchorStyles.Left
         };
+        saveBtn.Click += (_, _) => { SaveNetworkSettings(); };
 
-        // 出网方式行：标签 | 下拉 | 输入框（跨两列用嵌套面板）
-        var modeCell = new Panel { Dock = DockStyle.Fill, BackColor = Tokens.Surface };
-        modeRow.Controls.Add(modeCell, 1, 0);
-
-        var modeInner = new TableLayoutPanel
+        var proxyCell = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
@@ -757,46 +822,15 @@ internal sealed class SettingsForm : Form
             BackColor = Tokens.Surface,
             Margin = new Padding(0)
         };
-        modeInner.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
-        modeInner.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        modeInner.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        modeInner.Controls.Add(_proxyMode, 0, 0);
-        modeInner.Controls.Add(_proxyInput, 1, 0);
+        proxyCell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        proxyCell.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 84));
+        proxyCell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        proxyCell.Controls.Add(_proxyInput, 0, 0);
+        proxyCell.Controls.Add(saveBtn, 1, 0);
 
-        modeCell.Controls.Add(modeInner);
-        AddRow(modeRow);
+        proxyRow.Controls.Add(proxyCell, 1, 0);
+        AddRow(proxyRow);
 
-        // 保存按钮并进出网方式行的操作列，不再单独占一行。
-        // 之前它孤零零一行、左边空着，看起来像漏了标签。
-        var saveBtn = new FlatButton
-        {
-            Text = "保存",
-            Kind = ButtonKind.Secondary,
-            Width = 76,
-            Height = 30,
-            Margin = new Padding(0, 2, 0, 2),
-            Anchor = AnchorStyles.Left
-        };
-        saveBtn.Click += (_, _) => { SaveProxySetting(); };
-
-        // 操作列太窄放不下按钮，改成把按钮塞进内容列右侧的嵌套面板
-        var modeCellReal = modeRow.GetControlFromPosition(1, 0) as Panel;
-        if (modeCellReal != null && modeCellReal.Controls.Count > 0)
-        {
-            var inner = modeCellReal.Controls[0] as TableLayoutPanel;
-            if (inner != null)
-            {
-                inner.ColumnStyles.Clear();
-                inner.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
-                inner.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-                inner.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 84));
-                inner.ColumnCount = 3;
-
-                inner.Controls.Add(saveBtn, 2, 0);
-            }
-        }
-
-        // 状态提示单独一行（保存结果、错误信息）
         _proxyStatus = new Label
         {
             Text = "",
@@ -810,7 +844,189 @@ internal sealed class SettingsForm : Form
             BackColor = Tokens.Surface
         };
         AddRow(_proxyStatus);
+
+        RebuildRouteRows();
     }
+
+    private Core.Net.GithubRoutes _routes = Core.Net.GithubRoutes.Load();
+    private FlowLayoutPanel _routeList;
+    private readonly List<Control> _routeRows = new();
+
+    /// <summary>
+    /// 重建线路行。每行：[启用勾选] [地址输入] [优先级数字] [删除]
+    /// </summary>
+    private void RebuildRouteRows()
+    {
+        if (_routeList == null) return;
+
+        foreach (var c in _routeRows) { c.Dispose(); }
+        _routeRows.Clear();
+        _routeList.Controls.Clear();
+
+        int rowW = Math.Max(320, ContentWidth - 20);
+
+        for (int i = 0; i < _routes.Items.Count; i++)
+        {
+            var route = _routes.Items[i];
+            var row = new Panel
+            {
+                Width = rowW,
+                Height = 36,
+                BackColor = Tokens.Surface,
+                Margin = new Padding(0, 0, 0, Tokens.S1)
+            };
+
+            // 启用勾选
+            var enabled = new CheckBox
+            {
+                Checked = route.Enabled,
+                Width = 22,
+                Height = 22,
+                Left = 0,
+                Top = 7,
+                BackColor = Tokens.Surface,
+                Cursor = Cursors.Hand
+            };
+            var captured = route;
+            enabled.CheckedChanged += (_, _) =>
+            {
+                captured.Priority = enabled.Checked
+                    ? Math.Max(1, captured.Priority)
+                    : 0;
+                RefreshRoutePriorities();
+            };
+
+            // 地址输入
+            var addr = new RoundedField
+            {
+                Left = 30,
+                Top = 2,
+                Width = rowW - 30 - 70 - 34,
+                Height = 32,
+                BackColor = Tokens.Surface
+            };
+            addr.Text = route.IsDirect ? "" : route.BaseUrl;
+
+            if (route.IsDirect)
+            {
+                addr.Enabled = false;
+                addr.Text = "";
+            }
+            else
+            {
+                addr.TextChanged += (_, _) =>
+                {
+                    captured.BaseUrl = addr.Text;
+                };
+            }
+
+            // 优先级
+            var priority = new NumericUpDown
+            {
+                Left = rowW - 70 - 34,
+                Top = 6,
+                Width = 64,
+                Minimum = 0,
+                Maximum = Core.Net.GithubRoutes.MaxPriority,
+                Value = Math.Clamp(route.Priority, 0, Core.Net.GithubRoutes.MaxPriority),
+                BackColor = Tokens.Surface,
+                ForeColor = Tokens.TextPrimary,
+                Font = Tokens.FontBody
+            };
+            priority.ValueChanged += (_, _) =>
+            {
+                captured.Priority = (int)priority.Value;
+                enabled.Checked = captured.Priority > 0;
+            };
+
+            // 删除（直连不可删）
+            var del = new FlatButton
+            {
+                Text = "×",
+                Kind = ButtonKind.Secondary,
+                Left = rowW - 30,
+                Top = 4,
+                Width = 28,
+                Height = 28,
+                Enabled = !route.IsDirect
+            };
+            del.Click += (_, _) =>
+            {
+                _routes.Items.Remove(captured);
+                RebuildRouteRows();
+            };
+
+            row.Controls.Add(enabled);
+            row.Controls.Add(addr);
+            row.Controls.Add(priority);
+            row.Controls.Add(del);
+
+            _routeList.Controls.Add(row);
+            _routeRows.Add(row);
+        }
+
+        _routeList.Height = Math.Max(36, _routes.Items.Count * 38);
+        RelayoutFlow();
+    }
+
+    /// <summary>勾选变化后刷新各行的优先级显示（禁用行显示 0）。</summary>
+    private void RefreshRoutePriorities()
+    {
+        // 简单做法：整表重建，行数不多（通常 1~3 条）
+        RebuildRouteRows();
+    }
+
+    /// <summary>
+    /// 保存网络设置：线路表 + HTTP 代理。
+    ///
+    /// 校验失败时不落盘——存进去之后所有下载静默失败，比报错更难排查。
+    /// </summary>
+    private void SaveNetworkSettings()
+    {
+        // 1) 线路校验
+        foreach (var r in _routes.Items)
+        {
+            if (r.IsDirect) continue;
+            if (string.IsNullOrWhiteSpace(r.BaseUrl)) continue;
+            if (!Core.Net.GithubRoutes.IsValidPrefix(r.BaseUrl))
+            {
+                SetProxyStatus($"线路地址无效：{r.BaseUrl}。需要完整 http:// 或 https://，且不能带查询参数。",
+                    Tokens.Danger);
+                return;
+            }
+        }
+
+        var normalized = _routes.Normalize();
+        if (!normalized.HasUsableRoute)
+        {
+            SetProxyStatus("至少启用一条线路（优先级设为 1 到 10）。", Tokens.Danger);
+            return;
+        }
+
+        // 2) 代理校验
+        string proxy = (_proxyInput.Text ?? "").Trim();
+        if (proxy.Length > 0)
+        {
+            if (!Uri.TryCreate(proxy, UriKind.Absolute, out var uri)
+                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            {
+                SetProxyStatus("代理地址无效，需要类似 http://127.0.0.1:7890 的完整地址。", Tokens.Danger);
+                return;
+            }
+        }
+
+        // 3) 落盘
+        _routes = normalized;
+        _routes.Save();
+
+        _prefs.HttpProxy = proxy.Length == 0 ? "auto" : proxy;
+        _prefs.Save();
+
+        SetProxyStatus("已保存。线路 " + normalized.Active.Count() + " 条启用"
+            + (proxy.Length == 0 ? "，代理为自动。" : "，代理已设置。"), Tokens.Success);
+    }
+
+
 
     /// <summary>
     /// 造一个三列设置行：[固定 150px 标签] [弹性内容] [40px 操作]。
@@ -849,48 +1065,8 @@ internal sealed class SettingsForm : Form
         return row;
     }
 
-    private ComboBox _proxyMode;
     private RoundedField _proxyInput;
     private Label _proxyStatus;
-
-    /// <summary>
-    /// 保存代理设置。自定义模式必须能解析成合法 http/https URI，
-    /// 否则拒绝保存——避免存进去之后所有下载静默失败。
-    /// </summary>
-    private void SaveProxySetting()
-    {
-        string value;
-        switch (_proxyMode.SelectedIndex)
-        {
-            case 2:
-                value = "direct";
-                break;
-            case 1:
-                value = _proxyInput.Text.Trim();
-                if (value.Length == 0)
-                {
-                    SetProxyStatus("请输入代理地址，例如 http://127.0.0.1:7890", Tokens.Danger);
-                    return;
-                }
-                if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
-                    (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
-                {
-                    SetProxyStatus("只支持 http:// 或 https:// 开头的地址", Tokens.Danger);
-                    return;
-                }
-                break;
-            default:
-                value = "auto";
-                break;
-        }
-
-        _prefs.HttpProxy = value;
-        if (_prefs.Save())
-            SetProxyStatus("已保存", Tokens.Success);
-        else
-            SetProxyStatus("保存失败：配置目录不可写", Tokens.Danger);
-    }
-
     private void SetProxyStatus(string text, Color color)
     {
         if (_proxyStatus == null) return;
