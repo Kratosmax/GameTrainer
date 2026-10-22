@@ -1,0 +1,19 @@
+# 适配包 JSON 必须按原样存储，禁止换行转换。
+#
+# 原因：适配包带 SHA256 校验，而 git 默认的 CRLF/LF 转换会改变文件字节，
+# 导致本地算出的哈希与 GitHub 上的文件不符（实测差 188 字节，全是换行）。
+# 索引里的 sha256 必须与仓库里的字节一致，否则所有下载都会校验失败。
+*.json      text eol=lf
+*.md        text eol=lf
+*.ps1       text eol=lf
+*.cs        text eol=lf
+*.csproj    text eol=lf
+*.sln       text eol=crlf
+*.bat       text eol=crlf
+
+# 二进制文件不做任何处理
+*.png       binary
+*.ico       binary
+*.exe       binary
+*.zip       binary
+*.dll       binary

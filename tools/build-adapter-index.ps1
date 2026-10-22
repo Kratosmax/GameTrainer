@@ -41,8 +41,12 @@ Get-ChildItem $adaptersRoot -Directory | Sort-Object Name | ForEach-Object {
     if ($parsed.bindings) { $bindingCount = @($parsed.bindings).Count }
     $summary = "$engine · $bindingCount 个数值"
 
-    # SHA256 必须按 UTF-8 字节算，与客户端校验口径一致
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+    # SHA256 必须与 GitHub 上的字节一致。
+    # git 会把 CRLF 转成 LF（.gitattributes 设了 eol=lf），
+    # 所以这里也按 LF 归一后再算，否则客户端校验必然失败
+    # （实测同一份文件本地 10127 字节、远端 9939 字节）。
+    $normalized = $json -replace "`r`n", "`n"
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($normalized)
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try { $hashBytes = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
     $hash = -join ($hashBytes | ForEach-Object { $_.ToString("x2") })

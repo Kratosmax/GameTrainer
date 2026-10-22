@@ -103,12 +103,24 @@ internal static class AdapterRepository
         if (data == null)
             return (false, error);
 
-        // 哈希校验：只防传输损坏，不是安全边界
+        // 哈希校验：只防传输损坏，不是安全边界。
+        //
+        // 容忍换行差异：git 的 CRLF/LF 转换会改变文件字节（实测同一份 adapter.json
+        // 本地 10127 字节、GitHub 上 9939 字节，差的全是换行）。
+        // 严格比对会让所有下载都失败。做法是先按原样比，不一致再按
+        // 归一化换行后比——仍然能挡住真正的传输损坏与内容篡改。
         if (!string.IsNullOrWhiteSpace(remote.Sha256))
         {
+            string expected = remote.Sha256.Trim();
+
             string actual = Sha256Hex(data);
-            if (!actual.Equals(remote.Sha256.Trim(), StringComparison.OrdinalIgnoreCase))
-                return (false, $"校验失败：期望 {remote.Sha256[..Math.Min(8, remote.Sha256.Length)]}… 实际 {actual[..8]}…");
+            if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
+            {
+                // 退一步：把 CRLF 归一成 LF 后再比
+                string normalized = Sha256Hex(NormalizeNewlines(data));
+                if (!normalized.Equals(expected, StringComparison.OrdinalIgnoreCase))
+                    return (false, $"校验失败：期望 {expected[..Math.Min(8, expected.Length)]}… 实际 {actual[..8]}…");
+            }
         }
 
         // 安装前先确认能被适配包模型解析，
@@ -191,6 +203,27 @@ internal static class AdapterRepository
         }
 
         return set;
+    }
+
+    /// <summary>
+    /// 把 CRLF 归一成 LF。
+    ///
+    /// 只用于哈希校验的退路，不写盘——写盘必须保留原始字节，
+    /// 否则装进去的文件和仓库里的又不是同一份。
+    /// </summary>
+    private static byte[] NormalizeNewlines(byte[] data)
+    {
+        if (data == null || data.Length == 0) return data ?? Array.Empty<byte>();
+
+        var output = new List<byte>(data.Length);
+        for (int i = 0; i < data.Length; i++)
+        {
+            // 跳过 \r，只保留 \n
+            if (data[i] == (byte)'\r' && i + 1 < data.Length && data[i + 1] == (byte)'\n')
+                continue;
+            output.Add(data[i]);
+        }
+        return output.ToArray();
     }
 
     private static string Sha256Hex(byte[] data)

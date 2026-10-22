@@ -7,7 +7,7 @@
                          "version":  "1",
                          "engine":  "native_memory",
                          "summary":  "native_memory · 4 个数值",
-                         "sha256":  "f01966031b853f44881fadcee1825c37f8b99808c1db269cec7ab1f9624cf8ee",
+                         "sha256":  "a6dcf5818a0ce9cc692637c24d239468e41319199834cd378b27072db923a9d0",
                          "path":  "hospitalrhapsody/adapter.json"
                      },
                      {
@@ -16,7 +16,7 @@
                          "version":  "1",
                          "engine":  "construct3",
                          "summary":  "construct3 · 11 个数值",
-                         "sha256":  "699831c94f5b513e1006bb740cf5f7d6b8ebadfea4a1ab27372b73f1b7d389c2",
+                         "sha256":  "a9816e6c4c8737ad305b04fb8794f24fd32d9c2f7ddd20c664b9eaaf29f1af43",
                          "path":  "solcesto/adapter.json"
                      }
                  ]
