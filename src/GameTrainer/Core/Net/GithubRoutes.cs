@@ -50,14 +50,25 @@ internal sealed class GithubRoutes
             var copy = r.Clone();
             copy.Priority = Math.Clamp(copy.Priority, 0, MaxPriority);
 
-            // 非直连必须能解析成合法 http/https
-            if (!copy.IsDirect && !IsValidPrefix(copy.BaseUrl)) continue;
+            if (copy.IsDirect)
+            {
+                // 空白地址会被 IsDirect 判为直连。
+                // 但"地址是几个空格"和"地址真的是空"是两回事：
+                // 前者是用户误操作留下的残行，不该变成第二条直连。
+                // 归一化只保留一条直连，其余空白项直接丢弃。
+                if (result.Items.Any(x => x.IsDirect)) continue;
+            }
+            else
+            {
+                // 前缀线路必须能解析成合法 http/https
+                if (!IsValidPrefix(copy.BaseUrl)) continue;
 
-            // 重复前缀只留第一条
-            if (!copy.IsDirect && result.Items.Any(x =>
-                    !x.IsDirect && string.Equals(x.BaseUrl.Trim(), copy.BaseUrl.Trim(),
-                        StringComparison.OrdinalIgnoreCase)))
-                continue;
+                // 重复前缀只留第一条
+                if (result.Items.Any(x =>
+                        !x.IsDirect && string.Equals(x.BaseUrl.Trim(), copy.BaseUrl.Trim(),
+                            StringComparison.OrdinalIgnoreCase)))
+                    continue;
+            }
 
             result.Items.Add(copy);
         }

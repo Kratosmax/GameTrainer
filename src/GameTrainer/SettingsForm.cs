@@ -1040,10 +1040,27 @@ internal sealed class SettingsForm : Form
     private void SaveNetworkSettings()
     {
         // 1) 线路校验
+        //
+        // 空地址必须报错而不是跳过：跳过会静默存进一条空线路，
+        // 用户以为加成功了，实际下载时才发现那条线路永远失败。
         foreach (var r in _routes.Items)
         {
             if (r.IsDirect) continue;
-            if (string.IsNullOrWhiteSpace(r.BaseUrl)) continue;
+
+            if (string.IsNullOrWhiteSpace(r.BaseUrl))
+            {
+                SetProxyStatus("有线路地址为空。请填写完整地址，或删掉该行。", Tokens.Danger);
+                return;
+            }
+
+            // 只填了 "https://" 这种也算无效：拼接后是 https://https://...
+            string trimmed = r.BaseUrl.Trim();
+            if (trimmed is "http://" or "https://" or "http:/" or "https:/")
+            {
+                SetProxyStatus("线路地址不完整，需要类似 https://gh-proxy.org 的完整前缀。", Tokens.Danger);
+                return;
+            }
+
             if (!Core.Net.GithubRoutes.IsValidPrefix(r.BaseUrl))
             {
                 SetProxyStatus($"线路地址无效：{r.BaseUrl}。需要完整 http:// 或 https://，且不能带查询参数。",
@@ -1078,7 +1095,11 @@ internal sealed class SettingsForm : Form
         _prefs.HttpProxy = proxy.Length == 0 ? "auto" : proxy;
         _prefs.Save();
 
-        SetProxyStatus("已保存。线路 " + normalized.Active.Count() + " 条启用"
+        // 归一化会去重、排序、补直连，结果可能和界面上显示的不同。
+        // 必须重建界面，否则用户看到的还是保存前的列表。
+        RebuildRouteRows();
+
+        SetProxyStatus($"已保存。线路 {normalized.Active.Count()} 条启用"
             + (proxy.Length == 0 ? "，代理为自动。" : "，代理已设置。"), Tokens.Success);
     }
 
