@@ -64,10 +64,9 @@ internal sealed class GuiForm : Form
     private readonly CardPanel _logCard = new();
 
     // 状态栏
-    private readonly Label _statusAttach = new();
-    private readonly Label _statusAntiCheat = new();
-    private readonly Label _statusStartup = new();
-    private readonly Label _hotkeyHint = new();
+    /// <summary>底部状态栏（独立控件，见 Shell/StatusBar.cs）。</summary>
+    private Shell.StatusBar _statusBar;
+
 
     private readonly NotifyIcon _tray = new();
     private readonly Dictionary<string, ToggleSwitch> _toggles = new();
@@ -514,25 +513,15 @@ internal sealed class GuiForm : Form
         foreach (Control c in new Control[] { _attachBtn, _refreshBtn })
             if (c != null) c.Visible = visible;
 
-        foreach (Control c in new Control[] { _statusAttach, _statusAntiCheat, _statusStartup })
-            if (c != null) c.Visible = visible;
-
         if (!visible)
         {
-            _hotkeyHint.Text = "从下方选择一个游戏开始";
-            _hotkeyHint.ForeColor = Tokens.TextMuted;
-            _statusAttach.Text = "未选择游戏";
-            _statusAntiCheat.Text = "";
-            _statusStartup.Text = "";
+            _statusBar?.ClearGame();
         }
         else
         {
             // 回到游戏页时状态栏必须恢复真实信息，
             // 否则会残留首页那句"从下方选择一个游戏开始"。
-            _hotkeyHint.Text = _hotkeys != null && _hotkeys.Count > 0
-                ? $"快捷键：{_hotkeys.Count} 项已绑定"
-                : "快捷键：未配置";
-            _hotkeyHint.ForeColor = Tokens.TextSecondary;
+            _statusBar?.SetHotkeyCount(_hotkeys?.Count ?? 0);
 
             if (_adapter != null) UpdateStatusForAdapter(_adapter);
         }
@@ -848,30 +837,13 @@ internal sealed class GuiForm : Form
     /// 让使用者一眼看出「现在能不能操作」。
     /// cdpReady 已知时（如刚启动成功）直接传入，跳过一次 0.8s 的端口探测。
     /// </summary>
-    private void UpdateStatusForAdapter(GameAdapter a, bool? cdpReady = null)
+    /// <summary>
+    /// 按适配包更新状态栏。
+    /// 具体显示逻辑全在 Shell/StatusBar 里，这里只负责把状态递过去。
+    /// </summary>
+    private void UpdateStatusForAdapter(GameAdapter a)
     {
-        _statusAttach.Text = $"{a.Name} · {a.Engine}";
-        _statusAttach.ForeColor = Tokens.TextPrimary;
-
-        // 只有 construct3（走 CDP）才关心端口；native_memory 等原生引擎
-        // 直接读写进程内存，没有端口概念，显示"未连接"会误导使用者。
-        bool usesCdp = string.Equals(a.Engine, "construct3", StringComparison.OrdinalIgnoreCase);
-
-        if (usesCdp)
-        {
-            bool ok = cdpReady ?? GameLauncher.IsCdpReady(a.Connection.DebugPort, out _);
-            _statusAntiCheat.Text = ok ? $"调试端口：{a.Connection.DebugPort} 已就绪"
-                                       : $"调试端口：{a.Connection.DebugPort} 未就绪";
-            _statusAntiCheat.ForeColor = ok ? Tokens.Success : Tokens.Warning;
-        }
-        else
-        {
-            _statusAntiCheat.Text = "原生内存 · 无需调试端口";
-            _statusAntiCheat.ForeColor = Tokens.TextSecondary;
-        }
-
-        _statusStartup.Text = $"{a.Bindings.Count} 个数值 · {a.Mode}";
-        _statusStartup.ForeColor = Tokens.TextSecondary;
+        _statusBar?.SetGame(a);
     }
 
     private bool _launching;
@@ -912,7 +884,7 @@ internal sealed class GuiForm : Form
             if (r.Ok && r.CdpReady)
             {
                 Log("启动成功，正在读取数值…");
-                UpdateStatusForAdapter(adapter, cdpReady: true);
+                UpdateStatusForAdapter(adapter);
                 _refreshBtn.Enabled = true;
                 await RefreshValuesAsync();
             }
@@ -984,52 +956,9 @@ internal sealed class GuiForm : Form
 
     private Control BuildStatusBar()
     {
-        var bar = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Tokens.Surface,
-            Padding = new Padding(Tokens.S5, 0, Tokens.S5, 0),
-            Margin = new Padding(0)
-        };
-        bar.Paint += (_, e) =>
-        {
-            using var pen = new Pen(Tokens.Border, 1f);
-            e.Graphics.DrawLine(pen, 0, 0, bar.Width, 0);
-        };
-
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 4,
-            RowCount = 1,
-            BackColor = Tokens.Surface,
-            Margin = new Padding(0)
-        };
-        // 前两列承载动态文本，给弹性宽度；后两列是短提示
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 26));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 22));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-        // 状态栏只保留「对当前任务有意义」的信息。
-        //
-        // 原来第二格是「调试端口：已连接/未连接」，但 native_memory 引擎
-        // 根本不走 CDP，这行对这类游戏永远是"未连接"，与顶部徽章的
-        // 「已连接」并列出现时自相矛盾。
-        // 改成显示引擎类型，这既真实又不需要连接状态。
-        ConfigureStatusLabel(_statusAttach, "未选择适配包", Tokens.TextSecondary);
-        ConfigureStatusLabel(_statusAntiCheat, "引擎：—", Tokens.TextSecondary);
-        ConfigureStatusLabel(_statusStartup, "开机自启：未启用", Tokens.TextSecondary);
-        ConfigureStatusLabel(_hotkeyHint, "快捷键：未配置", Tokens.TextSecondary);
-
-        layout.Controls.Add(_statusAttach, 0, 0);
-        layout.Controls.Add(_statusAntiCheat, 1, 0);
-        layout.Controls.Add(_statusStartup, 2, 0);
-        layout.Controls.Add(_hotkeyHint, 3, 0);
-
-        bar.Controls.Add(layout);
-        return bar;
+        // 状态栏已抽成独立控件，这里只负责实例化与挂载。
+        _statusBar = new Shell.StatusBar { Dock = DockStyle.Fill };
+        return _statusBar;
     }
 
     private static void ConfigureStatusLabel(Label l, string text, Color color)
@@ -1133,21 +1062,18 @@ internal sealed class GuiForm : Form
 
         if (items.Count == 0)
         {
-            _hotkeyHint.Text = "快捷键：未配置";
-            _hotkeyHint.ForeColor = Tokens.TextSecondary;
+            _statusBar?.SetHotkeyCount(0);
             return;
         }
 
         if (_hotkeys.RegisterAll(items, out List<string> errors))
         {
-            _hotkeyHint.Text = $"快捷键：{items.Count} 项已绑定";
-            _hotkeyHint.ForeColor = Tokens.Success;
+            _statusBar?.SetHotkeyCount(items.Count);
             Log($"[热键] 已注册 {items.Count} 个修改项快捷键");
         }
         else
         {
-            _hotkeyHint.Text = "快捷键：注册失败";
-            _hotkeyHint.ForeColor = Tokens.Warning;
+            _statusBar?.SetHotkeyCount(0);
             foreach (string e in errors) Log("[警告] 热键：" + e);
         }
     }
@@ -1664,14 +1590,9 @@ internal sealed class GuiForm : Form
     private void RefreshStartupStatus()
     {
         StartupRegistration.Info info = StartupRegistration.Query();
-        _statusStartup.Text = "开机自启：" + info.Describe();
-        _statusStartup.ForeColor = info.Status switch
-        {
-            StartupRegistration.Status.Registered => Tokens.Success,
-            StartupRegistration.Status.PathStale => Tokens.Warning,
-            StartupRegistration.Status.Error => Tokens.Danger,
-            _ => Tokens.TextSecondary
-        };
+        // 只有"已注册"算真正启用；PathStale（路径失效）和 Error 都应显示为未启用，
+        // 否则用户以为自启可用，实际重启后不会运行。
+        _statusBar?.SetStartup(info.Status == StartupRegistration.Status.Registered);
     }
 
     /// <summary>
@@ -1697,7 +1618,6 @@ internal sealed class GuiForm : Form
         Log("        游戏进程仍在运行，内存中可能仍保留修改后的值。");
         Log("        可选中对应 profile 后使用「全部回滚」，或对具体项执行 revert --by-profile。");
 
-        _statusAttach.ForeColor = Tokens.Warning;
     }
 
     // ---------------- 设置 ----------------
