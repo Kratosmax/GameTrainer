@@ -116,9 +116,16 @@ internal static class AdapterRepository
             string actual = Sha256Hex(data);
             if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
             {
-                // 退一步：把 CRLF 归一成 LF 后再比
-                string normalized = Sha256Hex(NormalizeNewlines(data));
-                if (!normalized.Equals(expected, StringComparison.OrdinalIgnoreCase))
+                // 退一步：换行差异不算传输损坏。
+                //
+                // 索引里的哈希可能按 CRLF 算（本地文件），而仓库里的文件是 LF
+                // （.gitattributes 设了 eol=lf），两者字节不同但内容等价。
+                // 所以把实际数据按两种换行形式各算一次，任一匹配即通过。
+                string asLf = Sha256Hex(ToLf(data));
+                string asCrlf = Sha256Hex(ToCrlf(data));
+
+                if (!asLf.Equals(expected, StringComparison.OrdinalIgnoreCase)
+                    && !asCrlf.Equals(expected, StringComparison.OrdinalIgnoreCase))
                     return (false, $"校验失败：期望 {expected[..Math.Min(8, expected.Length)]}… 实际 {actual[..8]}…");
             }
         }
@@ -206,21 +213,34 @@ internal static class AdapterRepository
     }
 
     /// <summary>
-    /// 把 CRLF 归一成 LF。
-    ///
-    /// 只用于哈希校验的退路，不写盘——写盘必须保留原始字节，
-    /// 否则装进去的文件和仓库里的又不是同一份。
+    /// 把 CRLF 归一成 LF。只用于哈希校验的退路，不写盘。
     /// </summary>
-    private static byte[] NormalizeNewlines(byte[] data)
+    private static byte[] ToLf(byte[] data)
     {
         if (data == null || data.Length == 0) return data ?? Array.Empty<byte>();
 
         var output = new List<byte>(data.Length);
         for (int i = 0; i < data.Length; i++)
         {
-            // 跳过 \r，只保留 \n
             if (data[i] == (byte)'\r' && i + 1 < data.Length && data[i + 1] == (byte)'\n')
                 continue;
+            output.Add(data[i]);
+        }
+        return output.ToArray();
+    }
+
+    /// <summary>
+    /// 把孤立的 LF 补成 CRLF。只用于哈希校验的退路，不写盘。
+    /// </summary>
+    private static byte[] ToCrlf(byte[] data)
+    {
+        if (data == null || data.Length == 0) return data ?? Array.Empty<byte>();
+
+        var output = new List<byte>(data.Length + data.Length / 16);
+        for (int i = 0; i < data.Length; i++)
+        {
+            if (data[i] == (byte)'\n' && (i == 0 || data[i - 1] != (byte)'\r'))
+                output.Add((byte)'\r');
             output.Add(data[i]);
         }
         return output.ToArray();
