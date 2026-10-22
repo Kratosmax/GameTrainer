@@ -188,6 +188,14 @@ internal static class Tokens
 
     public static readonly Font FontMono = CreateFont("Cascadia Mono, Consolas", 9.5f, FontStyle.Regular);
 
+    /// <summary>
+    /// 按字号取字体。只在需要非标准字号时用。
+    /// 常规层级一律用上面的预定义字体——每次 new Font 都会占用一个 GDI 句柄，
+    /// 自绘控件里在 OnPaint 内 new Font 会造成句柄泄漏（旧代码有这个问题）。
+    /// </summary>
+    public static Font FontAt(float size, FontStyle style = FontStyle.Regular)
+        => CreateFont(FamilyUi, size, style);
+
     private static Font CreateFont(string family, float size, FontStyle style)
     {
         try { return new Font(family, size, style); }

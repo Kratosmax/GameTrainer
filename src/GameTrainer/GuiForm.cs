@@ -410,7 +410,7 @@ internal sealed class GuiForm : Form
         body.Controls.Add(BuildContent());
 
         // 两页切换：首页（游戏网格）与游戏页（当前游戏的修改界面）。
-        _homePage = new HomePage { Dock = DockStyle.Fill, Visible = false };
+        _homePage = new Pages.HomeView { Dock = DockStyle.Fill, Visible = false };
         _homePage.GameSelected += adapter => EnterGamePage(adapter);
         _homePage.DownloadRequested += remote => _ = DownloadAdapterAsync(remote);
         _homePage.UninstallRequested += id => UninstallAdapter(id);
@@ -425,7 +425,7 @@ internal sealed class GuiForm : Form
         return host;
     }
 
-    private HomePage _homePage;
+    private Pages.HomeView _homePage;
     private Control _gameBody;
 
     /// <summary>
