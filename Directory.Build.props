@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
     <!-- 版本唯一来源。标签、包名、显示版本、程序集版本全部从这里推导。 -->
-    <GameTrainerVersion>1.1.0</GameTrainerVersion>
+    <GameTrainerVersion>1.2.0</GameTrainerVersion>
     <Version>$(GameTrainerVersion)</Version>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
