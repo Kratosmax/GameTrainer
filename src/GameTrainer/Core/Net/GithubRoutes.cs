@@ -77,6 +77,7 @@ internal sealed class GithubRoutes
     }
 
     /// <summary>参与尝试的线路（优先级 > 0），按优先级降序。</summary>
+    [JsonIgnore]
     public IEnumerable<GithubRoute> Active =>
         Items.Where(r => r.Enabled).OrderByDescending(r => r.Priority);
 
@@ -96,6 +97,7 @@ internal sealed class GithubRoutes
     }
 
     /// <summary>至少有一条可用线路（优先级 > 0）。</summary>
+    [JsonIgnore]
     public bool HasUsableRoute => Items.Any(r => r.Enabled);
 
     // ---------- 持久化 ----------

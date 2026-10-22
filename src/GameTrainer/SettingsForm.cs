@@ -296,6 +296,36 @@ internal sealed class SettingsForm : Form
     ///
     /// 之前的实现给每块都套了大圆角卡片，是过度设计。
     /// </summary>
+    /// <summary>
+    /// 造一个可输入的圆角输入框。
+    ///
+    /// RoundedField 是容器，必须往里面放 TextBox 才能输入。
+    /// 之前直接 new RoundedField 再设 .Text，Panel 没有文本能力，
+    /// 表现为"输入框是空的、点进去也没光标"（实测踩到）。
+    /// </summary>
+    private (RoundedField Host, TextBox Box) MakeInput(string initial = "")
+    {
+        var host = new RoundedField
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Tokens.Surface,
+            Padding = new Padding(Tokens.S3, 0, Tokens.S3, 0)
+        };
+
+        var box = new TextBox
+        {
+            Text = initial ?? "",
+            Font = Tokens.FontBody,
+            BorderStyle = BorderStyle.None,
+            BackColor = Tokens.SurfaceSunken,
+            ForeColor = Tokens.TextPrimary,
+            Dock = DockStyle.Fill
+        };
+
+        host.Controls.Add(box);
+        return (host, box);
+    }
+
     private Label Title(string text)
     {
         // 分区之间用细线分隔，不用间距硬隔
@@ -796,13 +826,13 @@ internal sealed class SettingsForm : Form
 
         var proxyRow = MakeSettingRow("代理地址");
 
-        _proxyInput = new RoundedField
-        {
-            Dock = DockStyle.Fill,
-            Margin = new Padding(0, 3, Tokens.S2, 3),
-            BackColor = Tokens.Surface
-        };
-        _proxyInput.Text = _prefs.HttpProxy ?? "";
+        var (proxyHost, proxyBox) = MakeInput(
+            (_prefs.HttpProxy ?? "").Equals("auto", StringComparison.OrdinalIgnoreCase)
+                ? "" : _prefs.HttpProxy);
+
+        proxyHost.Margin = new Padding(0, 3, Tokens.S2, 3);
+        _proxyInput = proxyHost;
+        _proxyBox = proxyBox;
 
         var saveBtn = new FlatButton
         {
@@ -897,26 +927,23 @@ internal sealed class SettingsForm : Form
             };
 
             // 地址输入
-            var addr = new RoundedField
-            {
-                Left = 30,
-                Top = 2,
-                Width = rowW - 30 - 70 - 34,
-                Height = 32,
-                BackColor = Tokens.Surface
-            };
-            addr.Text = route.IsDirect ? "" : route.BaseUrl;
+            var (addrHost, addrBox) = MakeInput(route.IsDirect ? "" : route.BaseUrl);
+            addrHost.Dock = DockStyle.None;
+            addrHost.Left = 30;
+            addrHost.Top = 2;
+            addrHost.Width = rowW - 30 - 70 - 34;
+            addrHost.Height = 32;
 
             if (route.IsDirect)
             {
-                addr.Enabled = false;
-                addr.Text = "";
+                addrBox.Enabled = false;
+                addrBox.Text = "";
             }
             else
             {
-                addr.TextChanged += (_, _) =>
+                addrBox.TextChanged += (_, _) =>
                 {
-                    captured.BaseUrl = addr.Text;
+                    captured.BaseUrl = addrBox.Text;
                 };
             }
 
@@ -957,7 +984,7 @@ internal sealed class SettingsForm : Form
             };
 
             row.Controls.Add(enabled);
-            row.Controls.Add(addr);
+            row.Controls.Add(addrHost);
             row.Controls.Add(priority);
             row.Controls.Add(del);
 
@@ -1004,7 +1031,7 @@ internal sealed class SettingsForm : Form
         }
 
         // 2) 代理校验
-        string proxy = (_proxyInput.Text ?? "").Trim();
+        string proxy = (_proxyBox?.Text ?? "").Trim();
         if (proxy.Length > 0)
         {
             if (!Uri.TryCreate(proxy, UriKind.Absolute, out var uri)
@@ -1066,6 +1093,7 @@ internal sealed class SettingsForm : Form
     }
 
     private RoundedField _proxyInput;
+    private TextBox _proxyBox;
     private Label _proxyStatus;
     private void SetProxyStatus(string text, Color color)
     {
