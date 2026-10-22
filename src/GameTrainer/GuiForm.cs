@@ -625,129 +625,33 @@ internal sealed class GuiForm : Form
     }
 
     /// <summary>
-    /// 应用内输入游戏路径。
+    /// 让用户选择游戏的可执行文件。
     ///
-    /// 不用系统文件对话框：实测该环境下 IFileDialog.Show 会永久阻塞
-    /// （连 PowerShell 的 OpenFileDialog 也一样），所以完全绕开 Shell。
+    /// 用应用内文件浏览器，不用系统文件对话框（实测该环境下
+    /// IFileDialog.Show 会永久阻塞）。也不用「打开资源管理器让用户自己找」——
+    /// 那个做法是骗人的：用户在资源管理器里双击 exe 会直接启动游戏，
+    /// 而不是把路径带回来。
+    ///
+    /// 浏览器的行为约定：双击目录进入、双击 exe 只选中、点确定才返回。
     /// </summary>
     private string PromptForExePath(GameAdapter adapter)
     {
-        using var dlg = new Form
-        {
-            Text = $"设置游戏路径 — {adapter.Name}",
-            FormBorderStyle = FormBorderStyle.FixedDialog,
-            StartPosition = FormStartPosition.CenterParent,
-            MaximizeBox = false,
-            MinimizeBox = false,
-            ClientSize = new Size(560, 200),
-            BackColor = Tokens.PageBack,
-            Font = Tokens.FontBody
-        };
-
-        var tip = new Label
-        {
-            Text = $"请输入 {adapter.Exe} 的完整路径，或从资源管理器复制后粘贴。",
-            AutoSize = false,
-            Width = 520,
-            Height = 44,
-            Left = 20,
-            Top = 16,
-            ForeColor = Tokens.TextSecondary,
-            Font = Tokens.FontCaption
-        };
-
-        var input = new TextBox
-        {
-            Left = 20,
-            Top = 66,
-            Width = 520,
-            Height = 28,
-            Font = Tokens.FontBody,
-            Text = AdapterInstallPaths.Resolve(adapter.Id) ?? "",
-            BorderStyle = BorderStyle.FixedSingle
-        };
-
-        var paste = new Button
-        {
-            Text = "从剪贴板粘贴",
-            Left = 20,
-            Top = 110,
-            Width = 130,
-            Height = 32
-        };
-        paste.Click += (_, _) =>
+        string startDir = "";
+        string existing = AdapterInstallPaths.Resolve(adapter.Id);
+        if (!string.IsNullOrWhiteSpace(existing))
         {
             try
             {
-                if (Clipboard.ContainsText())
-                    input.Text = Clipboard.GetText().Trim().Trim('"');
-            }
-            catch { /* 剪贴板被占用时忽略 */ }
-        };
-
-        var browse = new Button
-        {
-            Text = "在资源管理器中选择…",
-            Left = 160,
-            Top = 110,
-            Width = 160,
-            Height = 32
-        };
-        browse.Click += (_, _) =>
-        {
-            // 打开资源管理器让用户自己找，找到后复制路径回来粘贴。
-            // 不调用任何文件对话框，避开 Shell 阻塞。
-            string current = input.Text.Trim().Trim('"');
-            string dir = "";
-            try
-            {
-                if (File.Exists(current)) dir = Path.GetDirectoryName(current);
-                else if (Directory.Exists(current)) dir = current;
+                if (File.Exists(existing)) startDir = Path.GetDirectoryName(existing);
+                else if (Directory.Exists(existing)) startDir = existing;
             }
             catch { }
+        }
 
-            if (string.IsNullOrEmpty(dir))
-                dir = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        using var dlg = new UI.FileBrowserDialog(
+            $"选择 {adapter.Name} 的可执行文件", startDir, adapter.Exe);
 
-            try
-            {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = "explorer.exe",
-                    Arguments = $"\"{dir}\"",
-                    UseShellExecute = true
-                });
-            }
-            catch { }
-        };
-
-        var ok = new Button
-        {
-            Text = "确定",
-            Left = 380,
-            Top = 150,
-            Width = 76,
-            Height = 32,
-            DialogResult = DialogResult.OK
-        };
-
-        var cancel = new Button
-        {
-            Text = "取消",
-            Left = 464,
-            Top = 150,
-            Width = 76,
-            Height = 32,
-            DialogResult = DialogResult.Cancel
-        };
-
-        dlg.Controls.AddRange(new Control[] { tip, input, paste, browse, ok, cancel });
-        dlg.AcceptButton = ok;
-        dlg.CancelButton = cancel;
-
-        if (dlg.ShowDialog(this) != DialogResult.OK) return null;
-
-        return input.Text.Trim().Trim('"');
+        return dlg.ShowDialog(this) == DialogResult.OK ? dlg.SelectedPath : null;
     }
 
     /// <summary>卸载适配包。入口保留在首页卡片上，卸载后卡片变成"可下载"。</summary>
