@@ -31,12 +31,6 @@ internal sealed class SettingsForm : Form
     private readonly Label _barTitle = new();
     private readonly Label _pageSub = new();
 
-    /// <summary>
-    /// 当前正在填充的分组卡片。
-    /// 非 null 时 Title/Body/Wrap/AddRow 都挂到它里面，而不是直接堆到滚动区。
-    /// 这样所有 Render* 方法不用改调用方式，就能获得分组卡片的外观。
-    /// </summary>
-    private Shell.SettingsCard _group;
 
     private static readonly (string Title, string Sub)[] Sections =
     {
@@ -122,20 +116,22 @@ internal sealed class SettingsForm : Form
             BackColor = Tokens.PageBack,
             Margin = new Padding(0)
         };
-        contentWrap.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
+        // 头部行高 76：23pt 标题行高约 40px + 副标题 24px + 留白。
+        // 原来 64 会让标题被裁掉上缘（实测「数据与备份」顶部缺一截）。
+        contentWrap.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
         contentWrap.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         var headHost = new Panel { Dock = DockStyle.Fill, BackColor = Tokens.PageBack, Margin = new Padding(0) };
         _pageTitle.Dock = DockStyle.Top;
-        _pageTitle.Height = 32;
+        _pageTitle.Height = 44;
         _pageTitle.Font = Tokens.FontTitle;
         _pageTitle.ForeColor = Tokens.TextPrimary;
-        _pageTitle.TextAlign = ContentAlignment.BottomLeft;
+        _pageTitle.TextAlign = ContentAlignment.MiddleLeft;
         _pageSub.Dock = DockStyle.Top;
         _pageSub.Height = 24;
         _pageSub.Font = Tokens.FontCaption;
         _pageSub.ForeColor = Tokens.TextSecondary;
-        _pageSub.TextAlign = ContentAlignment.TopLeft;
+        _pageSub.TextAlign = ContentAlignment.MiddleLeft;
         headHost.Controls.Add(_pageSub);
         headHost.Controls.Add(_pageTitle);
 
@@ -213,13 +209,6 @@ internal sealed class SettingsForm : Form
     {
         if (c == null) return;
 
-        // 有分组时挂进分组卡片，否则直接堆到滚动区
-        if (_group != null)
-        {
-            _group.AddRow(c);
-            return;
-        }
-
         c.Left = _flow.Padding.Left;
         c.Top = _flowPaddingCursor;
         c.Width = ContentWidth;
@@ -228,39 +217,6 @@ internal sealed class SettingsForm : Form
         _flowPaddingCursor = c.Bottom + Tokens.S3;
     }
 
-    /// <summary>
-    /// 开始一个新分组卡片。之前的 Title() 只能做小标题，
-    /// 没有分组边界，整页看起来像一篇文章。
-    /// </summary>
-    private void BeginGroup(string title)
-    {
-        EndGroup();
-
-        _group = new Shell.SettingsCard(title);
-        _flow.Controls.Add(_group);
-    }
-
-    /// <summary>结束当前分组：按内容算高度并登记到滚动区。</summary>
-    private void EndGroup()
-    {
-        if (_group == null) return;
-
-        // 宽度必须在 RelayoutRows 之前设好：
-        // 行高依赖宽度，宽度不对算出来的卡片高度就是错的，
-        // 表现为文字溢出到卡片外面。
-        int w = ContentWidth;
-        _group.Width = w;
-
-        // 先按宽度定高，再定位
-        _group.RelayoutRows();
-
-        _group.Left = _flow.Padding.Left;
-        _group.Top = _flowPaddingCursor;
-
-        // 卡片之间留 S4 呼吸空间：设置页信息密度高，卡片贴太紧会糊成一片
-        _flowPaddingCursor = _group.Bottom + Tokens.S4;
-        _group = null;
-    }
 
     /// <summary>下一个块的纵向起点。</summary>
     private int _flowPaddingCursor;
@@ -278,12 +234,6 @@ internal sealed class SettingsForm : Form
             c.Left = _flow.Padding.Left;
             c.Top = y;
             c.Width = ContentWidth;
-
-            // 分组卡片要按新宽度重排内部行，再取高度
-            if (c is Shell.SettingsCard card)
-            {
-                card.RelayoutRows();
-            }
 
             y = c.Bottom + Tokens.S3;
         }
@@ -326,11 +276,7 @@ internal sealed class SettingsForm : Form
             default: RenderAbout(); break;
         }
 
-        // 收尾最后一个分组：Render* 里最后一次 Title() 开启的组还没关闭。
-        // 必须在 ResumeLayout 之后——EndGroup 要按 _flow 的实际宽度算卡片高度，
-        // 挂起布局期间宽度可能是 0，算出来的高度全错（内容会溢出卡片）。
         _flow.ResumeLayout();
-        EndGroup();
         RelayoutFlow();
         ResizeChildren();
     }
@@ -352,8 +298,6 @@ internal sealed class SettingsForm : Form
     /// </summary>
     private Label Title(string text)
     {
-        EndGroup();   // 若上一个分组还开着，先收尾
-
         // 分区之间用细线分隔，不用间距硬隔
         if (_sectionCount > 0)
         {

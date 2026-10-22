@@ -913,3 +913,67 @@ $ GameTrainer.exe update check
 抽取需要把这些字段的读写全部改为通过 TopBar 的事件/属性，
 回归面覆盖顶栏所有按钮与更新红点——都是已发布的稳定功能。
 本轮优先修用户报的 5 个实际缺陷，TopBar 留待下一轮。
+---
+
+## 第三轮：TopBar 拆分 + 死代码清理 + 布局缺陷（2026-10-22）
+
+### TopBar 拆分完成
+
+`BuildTopBar`（125 行）+ 5 个按钮字段（61 处引用）→ `Shell/TopBar.cs`（189 行）。
+
+对外接口：
+```csharp
+// 事件
+LaunchRequested / RefreshRequested / SettingsRequested / BackRequested / UpdateRequested
+
+// 状态
+SetBackVisible(bool) / SetRefreshEnabled(bool) / SetLaunchEnabled(bool)
+ShowUpdateDot(string) / HideUpdateDot()
+```
+
+主窗体不再持有任何顶栏按钮控件。
+
+### 删除死代码
+
+上一轮为设置页做的 `Shell/SettingsCard.cs`（分组卡片）在改成 PinNote 风格后
+成了死代码——`BeginGroup` 零调用点，只剩 `EndGroup` 空转。
+已删除该文件及 `_group` 字段、`BeginGroup`/`EndGroup` 方法、`RelayoutFlow` 里的卡片分支。
+
+### 本轮修的两个布局缺陷
+
+**1. 设置页标题被裁上缘**
+`headHost` 行高 64px，但 23pt 标题需要约 40px + 副标题 24px。
+改为行高 76、标题高 44、居中对齐。实测「数据与备份」不再缺一截。
+
+**2. 日志抽屉验证**
+用 UiShot 新增 `game-log-open` 场景，实测坐标：
+```
+gameView = {X=24,Y=8,  W=1318,H=421}   // 底部 429
+handle   = {X=24,Y=441,W=1318,H=8}     // 拖动把手
+logCard  = {X=24,Y=449,W=1318,H=180}
+overlap  = False                        // 不再重叠
+```
+
+### 关于设置页风格的判断修正
+
+上一轮给每块套大圆角卡片，用户指出「在屎山上雕花」。
+读了 PinNote 的 `SettingsPanel.xaml` 后确认：
+它用「分区标题 + 缩进内容 + 一条细线分隔」，不做卡片分组。
+设置项本就密集，套卡片后每块被内边距和阴影包住，一屏信息量掉一半。
+
+**教训：参照实现要真的读代码，不能凭印象套一个"看起来更现代"的结构。**
+
+### 当前规模
+
+| 文件 | 行数 |
+|---|---|
+| GuiForm.cs | 1748（重构前 2046） |
+| TopBar.cs | 189（新） |
+| StatusBar.cs | 123（新） |
+| SettingsForm.cs | 1065 |
+
+### 验证
+
+- `dotnet build`：0 错误 0 警告
+- `dotnet test`：251 通过 0 失败
+- UiShot：16 张截图全部正常

@@ -148,6 +148,46 @@ internal static class Program
             report.AppendLine($"game-page.capture.failed = {ex.Message}");
         }
 
+        // 日志展开后的游戏页：验证内容区是否让出空间、拖动把手是否可见
+        try
+        {
+            var gvF = guiType.GetField("_gameView",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var gvL = gvF?.GetValue(gui) as Control;
+
+            var toggle = guiType.GetMethod("ToggleLogCollapsed",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var logPadF = guiType.GetField("_logPad",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var logPad = logPadF?.GetValue(gui) as Panel;
+
+            if (toggle != null && logPad != null)
+            {
+                gui.Show();
+                Pump(200);
+                toggle.Invoke(gui, new object[] { logPad });
+                Pump(900);   // 等 400ms 动画 + 余量
+
+                var logCardF = guiType.GetField("_logCard",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var logCard = logCardF?.GetValue(gui) as Control;
+                var handleF = guiType.GetField("_logResizeHandle",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var handle = handleF?.GetValue(gui) as Control;
+
+                report.AppendLine($"log-open.gameView = {gvL?.Bounds}");
+                report.AppendLine($"log-open.logCard  = {logCard?.Bounds}");
+                report.AppendLine($"log-open.handle   = {handle?.Bounds} visible={handle?.Visible}");
+                report.AppendLine($"log-open.overlap  = {((logCard != null && gvL != null) ? (gvL.Bottom > logCard.Top) : false)}");
+
+                results.Add(Capture(gui, Path.Combine(outDir, "game-log-open.png"), gui.Size));
+            }
+        }
+        catch (Exception ex)
+        {
+            report.AppendLine($"log-open.failed = {ex.GetType().Name}: {ex.Message}");
+        }
+
         // 有数据时的游戏页：用假数据验证卡片布局（标题、数值、输入框、应用按钮）。
         // 真实数据需要游戏处于存档内，截图环境不一定满足，所以单独造一份。
         try
@@ -252,10 +292,6 @@ internal static class Program
                 navType.GetProperty("SelectedIndex")?.SetValue(nav, idx);
 
             Pump(360);
-            // 诊断：输出设置页所有分组卡片的实际尺寸
-        foreach (Control c in dlg.Controls)
-            DumpCards(c, report);
-
         results.Add(Capture(dlg, Path.Combine(outDir, "settings-" + sections[idx] + ".png"), dlg.Size));
 
             // 几何落盘：文本框被截断这类问题必须用真实 Bounds 定位，
@@ -416,13 +452,4 @@ internal static class Program
         return $"{path}  {size.Width}x{size.Height}";
     }
 
-    private static void DumpCards(Control parent, System.Text.StringBuilder report)
-    {
-        foreach (Control c in parent.Controls)
-        {
-            if (c.GetType().Name == "SettingsCard")
-                report.AppendLine($"settingsCard {c.AccessibleDescription}");
-            DumpCards(c, report);
-        }
-    }
 }
