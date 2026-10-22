@@ -21,8 +21,14 @@ internal sealed class SettingsForm : Form
     private readonly ToggleSwitch _startupToggle = new();
     private readonly Label _startupHint = new();
     private readonly NavList _nav = new();
-    private readonly FlowLayoutPanel _flow = new();
+    /// <summary>
+    /// 内容滚动区。用 Panel 而非 FlowLayoutPanel：
+    /// FlowLayoutPanel 在 TopDown + AutoScroll 下，滚动条出现会改宽度并重排，
+    /// 底部内容被裁。Panel + 手动堆叠尺寸可控。
+    /// </summary>
+    private readonly Panel _flow = new();
     private readonly Label _pageTitle = new();
+    private readonly Label _barTitle = new();
     private readonly Label _pageSub = new();
 
     private static readonly (string Title, string Sub)[] Sections =
@@ -126,12 +132,14 @@ internal sealed class SettingsForm : Form
         headHost.Controls.Add(_pageSub);
         headHost.Controls.Add(_pageTitle);
 
+        // cardBack 自己画圆角，_flow 若 Dock=Fill 会盖住圆角边缘，
+        // 给内边距让滚动区缩进到圆角内（右侧多留一点给滚动条）。
         var cardBack = new Panel
         {
             Dock = DockStyle.Fill,
             BackColor = Tokens.Surface,
             Margin = new Padding(0),
-            Padding = new Padding(0)
+            Padding = new Padding(Tokens.S2, Tokens.S2, Tokens.S2, Tokens.S2)
         };
         cardBack.Paint += (_, e) =>
         {
@@ -140,9 +148,10 @@ internal sealed class SettingsForm : Form
                 Tokens.Surface, Tokens.Border);
         };
 
+        // 用 Panel + AutoScroll + 手动纵向堆叠，不用 FlowLayoutPanel。
+        // FlowLayoutPanel 在 TopDown + WrapContents=false + AutoScroll 时，
+        // 垂直滚动条出现会改变可用宽度并触发重排，底部内容被裁（实测）。
         _flow.Dock = DockStyle.Fill;
-        _flow.FlowDirection = FlowDirection.TopDown;
-        _flow.WrapContents = false;
         _flow.AutoScroll = true;
         _flow.BackColor = Tokens.Surface;
         _flow.Padding = new Padding(Tokens.S5, Tokens.S4, Tokens.S5, Tokens.S5);
@@ -176,17 +185,58 @@ internal sealed class SettingsForm : Form
             e.Graphics.DrawLine(pen, 0, bar.Height - 1, bar.Width, bar.Height - 1);
         };
 
-        var title = new Label
-        {
-            Text = "设置",
-            Dock = DockStyle.Fill,
-            Font = Tokens.FontSection,
-            ForeColor = Tokens.TextPrimary,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Margin = new Padding(0)
-        };
-        bar.Controls.Add(title);
+        // 顶部 bar 显示"设置 · 分区名"作为位置指示。
+        // 原来固定写"设置"，与窗口标题、内容区标题三重重复，
+        // 使用者看不出自己在哪一层。
+        _barTitle.Text = "设置";
+        _barTitle.Dock = DockStyle.Fill;
+        _barTitle.Font = Tokens.FontSection;
+        _barTitle.ForeColor = Tokens.TextPrimary;
+        _barTitle.TextAlign = ContentAlignment.MiddleLeft;
+        _barTitle.Margin = new Padding(0);
+        bar.Controls.Add(_barTitle);
         return bar;
+    }
+
+    /// <summary>
+    /// 往滚动区追加一个块。统一管理纵向堆叠与宽度。
+    /// 所有内容块都必须走这里，不要直接 _flow.Controls.Add。
+    /// </summary>
+    private void AddRow(Control c)
+    {
+        if (c == null) return;
+
+        c.Left = _flow.Padding.Left;
+        c.Top = _flowPaddingCursor;
+        c.Width = ContentWidth;
+
+        _flow.Controls.Add(c);
+        _flowPaddingCursor = c.Bottom + Tokens.S3;
+    }
+
+    /// <summary>下一个块的纵向起点。</summary>
+    private int _flowPaddingCursor;
+
+    /// <summary>
+    /// 按当前宽度重排所有块，并设置滚动范围。
+    /// 窗口缩放、切换分区、动态增删块之后都要调。
+    /// </summary>
+    private void RelayoutFlow()
+    {
+        int y = _flow.Padding.Top;
+
+        foreach (Control c in _flow.Controls)
+        {
+            c.Left = _flow.Padding.Left;
+            c.Top = y;
+            c.Width = ContentWidth;
+            y = c.Bottom + Tokens.S3;
+        }
+
+        _flowPaddingCursor = y;
+
+        // AutoScroll 需要显式的最小尺寸，否则内容超出时不出现滚动条
+        _flow.AutoScrollMinSize = new Size(0, y + _flow.Padding.Bottom);
     }
 
     private void ResizeChildren()
@@ -205,6 +255,7 @@ internal sealed class SettingsForm : Form
         {
             _pageTitle.Text = Sections[idx].Title;
             _pageSub.Text = Sections[idx].Sub;
+            _barTitle.Text = "设置 · " + Sections[idx].Title;
         }
 
         _flow.SuspendLayout();
@@ -220,6 +271,7 @@ internal sealed class SettingsForm : Form
         }
 
         _flow.ResumeLayout();
+        RelayoutFlow();
         ResizeChildren();
     }
 
@@ -242,7 +294,7 @@ internal sealed class SettingsForm : Form
             TextAlign = ContentAlignment.BottomLeft,
             Tag = "full"
         };
-        _flow.Controls.Add(l);
+        AddRow(l);
         return l;
     }
 
@@ -267,7 +319,7 @@ internal sealed class SettingsForm : Form
             TextAlign = ContentAlignment.TopLeft,
             Tag = "full"
         };
-        _flow.Controls.Add(l);
+        AddRow(l);
         return l;
     }
 
@@ -298,7 +350,7 @@ internal sealed class SettingsForm : Form
             TextAlign = ContentAlignment.TopLeft,
             Tag = "full"
         };
-        _flow.Controls.Add(l);
+        AddRow(l);
         return l;
     }
 
@@ -335,13 +387,13 @@ internal sealed class SettingsForm : Form
                                    Tokens.S3, 0);
 
         host.Controls.Add(tb);
-        _flow.Controls.Add(host);
+        AddRow(host);
         return tb;
     }
 
     private void Gap(int px = Tokens.S4)
     {
-        _flow.Controls.Add(new Panel
+        AddRow(new Panel
         {
             Height = px,
             Width = 1,
@@ -370,7 +422,7 @@ internal sealed class SettingsForm : Form
             host.Controls.Add(b);
             x += b.Width + Tokens.S2;
         }
-        _flow.Controls.Add(host);
+        AddRow(host);
     }
 
     // ---- 分类内容 ----
@@ -409,7 +461,7 @@ internal sealed class SettingsForm : Form
 
         row.Controls.Add(label);
         row.Controls.Add(_startupToggle);
-        _flow.Controls.Add(row);
+        AddRow(row);
 
         _startupHint.Font = Tokens.FontCaption;
         _startupHint.ForeColor = Tokens.TextSecondary;
@@ -418,7 +470,7 @@ internal sealed class SettingsForm : Form
         _startupHint.Height = 42;
         _startupHint.Margin = new Padding(0, 0, 0, Tokens.S3);
         _startupHint.Tag = "full";
-        _flow.Controls.Add(_startupHint);
+        AddRow(_startupHint);
 
         Gap();
         Title("窗口行为");
@@ -610,7 +662,7 @@ internal sealed class SettingsForm : Form
     {
         var netTitle = Body("网络", Tokens.TextPrimary);
         netTitle.Font = Tokens.FontBodyStrong;
-        _flow.Controls.Add(netTitle);
+        AddRow(netTitle);
 
         var hint = new Label
         {
@@ -623,7 +675,7 @@ internal sealed class SettingsForm : Form
             Margin = new Padding(0, 0, 0, Tokens.S2),
             BackColor = Tokens.Surface
         };
-        _flow.Controls.Add(hint);
+        AddRow(hint);
 
         var row = new Panel
         {
@@ -680,7 +732,7 @@ internal sealed class SettingsForm : Form
         row.Controls.Add(modeLabel);
         row.Controls.Add(_proxyMode);
         row.Controls.Add(_proxyInput);
-        _flow.Controls.Add(row);
+        AddRow(row);
 
         var testRow = new Panel
         {
@@ -715,7 +767,7 @@ internal sealed class SettingsForm : Form
 
         testRow.Controls.Add(saveBtn);
         testRow.Controls.Add(_proxyStatus);
-        _flow.Controls.Add(testRow);
+        AddRow(testRow);
     }
 
     private ComboBox _proxyMode;
@@ -806,7 +858,7 @@ internal sealed class SettingsForm : Form
 
         row.Controls.Add(_autoUpdateBox);
         row.Controls.Add(ver);
-        _flow.Controls.Add(row);
+        AddRow(row);
 
         RenderNetworkSubsection();
 
@@ -822,7 +874,7 @@ internal sealed class SettingsForm : Form
             Margin = new Padding(220, 0, 0, Tokens.S2),
             BackColor = Tokens.Surface
         };
-        _flow.Controls.Add(_updateStatus);
+        AddRow(_updateStatus);
 
         var btnRow = new FlowLayoutPanel
         {
@@ -841,7 +893,7 @@ internal sealed class SettingsForm : Form
         };
         _checkUpdateBtn.Click += async (_, _) => await CheckUpdateAsync();
         btnRow.Controls.Add(_checkUpdateBtn);
-        _flow.Controls.Add(btnRow);
+        AddRow(btnRow);
     }
 
     /// <summary>
@@ -943,7 +995,7 @@ internal sealed class SettingsForm : Form
             result.ForeColor = Tokens.TextSecondary;
         };
         ButtonRow(btn);
-        _flow.Controls.Add(result);
+        AddRow(result);
 
         Gap();
         Wrap("profile 只保存偏移与签名，不分发游戏原始数据或任何资源文件。");
