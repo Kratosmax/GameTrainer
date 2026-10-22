@@ -878,6 +878,9 @@ internal sealed class SettingsForm : Form
         RebuildRouteRows();
     }
 
+    /// <summary>直连行显示的说明文字。</summary>
+    private const string DirectRouteLabel = "GitHub 直连（不拼接前缀）";
+
     private Core.Net.GithubRoutes _routes = Core.Net.GithubRoutes.Load();
     private FlowLayoutPanel _routeList;
     private readonly List<Control> _routeRows = new();
@@ -915,7 +918,9 @@ internal sealed class SettingsForm : Form
                 Left = 0,
                 Top = 7,
                 BackColor = Tokens.Surface,
-                Cursor = Cursors.Hand
+                Cursor = Cursors.Hand,
+                // 直连是兜底线路，不允许取消勾选
+                Enabled = !route.IsDirect
             };
             var captured = route;
             enabled.CheckedChanged += (_, _) =>
@@ -927,27 +932,50 @@ internal sealed class SettingsForm : Form
             };
 
             // 地址输入
-            var (addrHost, addrBox) = MakeInput(route.IsDirect ? "" : route.BaseUrl);
-            addrHost.Dock = DockStyle.None;
-            addrHost.Left = 30;
-            addrHost.Top = 2;
-            addrHost.Width = rowW - 30 - 70 - 34;
-            addrHost.Height = 32;
+            // 直连行用纯文字，不用输入框。
+            //
+            // 之前给直连行也放了输入框（只读），视觉上是一个灰蒙蒙的空框，
+            // 看着像"这条线路坏了"或"还没填"。直连本来就不需要填东西，
+            // 直接显示说明文字更清楚。
+            Control addrHost;
 
             if (route.IsDirect)
             {
-                addrBox.Enabled = false;
-                addrBox.Text = "";
+                var label = new Label
+                {
+                    Text = DirectRouteLabel,
+                    Font = Tokens.FontBody,
+                    ForeColor = Tokens.TextSecondary,
+                    AutoSize = false,
+                    Dock = DockStyle.None,
+                    Left = 30,
+                    Top = 2,
+                    Width = rowW - 30 - 70 - 34,
+                    Height = 32,
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    BackColor = Tokens.Surface
+                };
+                addrHost = label;
             }
             else
             {
-                addrBox.TextChanged += (_, _) =>
+                var (host, box) = MakeInput(route.BaseUrl);
+                host.Dock = DockStyle.None;
+                host.Left = 30;
+                host.Top = 2;
+                host.Width = rowW - 30 - 70 - 34;
+                host.Height = 32;
+
+                box.TextChanged += (_, _) =>
                 {
-                    captured.BaseUrl = addrBox.Text;
+                    captured.BaseUrl = box.Text;
                 };
+
+                addrHost = host;
             }
 
-            // 优先级
+            // 优先级。直连行固定最高、不可调——
+            // 直连的语义是"不拼接"，把它降级或禁用没有意义。
             var priority = new NumericUpDown
             {
                 Left = rowW - 70 - 34,
@@ -958,7 +986,8 @@ internal sealed class SettingsForm : Form
                 Value = Math.Clamp(route.Priority, 0, Core.Net.GithubRoutes.MaxPriority),
                 BackColor = Tokens.Surface,
                 ForeColor = Tokens.TextPrimary,
-                Font = Tokens.FontBody
+                Font = Tokens.FontBody,
+                Enabled = !route.IsDirect
             };
             priority.ValueChanged += (_, _) =>
             {
