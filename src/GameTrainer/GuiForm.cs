@@ -314,10 +314,35 @@ internal sealed class GuiForm : Form
         _gameBody = body;
 
         host.Controls.Add(pages);
+
+        // Toast 挂在最上层，不抢焦点，几秒后自动消失。
+        // 必须最后 Add 并 BringToFront，否则会被 pages 盖住。
+        _toast = new UI.Toast();
+        host.Controls.Add(_toast);
+        _toast.BringToFront();
+
+        host.Resize += (_, _) => _toast.Reposition();
+
         return host;
     }
 
+    /// <summary>显示一条成功提示。</summary>
+    private void ToastOk(string text) => _toast?.Show(text);
+
+    /// <summary>显示一条失败提示。同时写日志留档。</summary>
+    private void ToastError(string text)
+    {
+        _toast?.Show(text, isError: true);
+        Log("[失败] " + text);
+    }
+
+    /// <summary>显示一条警告提示。</summary>
+    private void ToastWarn(string text) => _toast?.Show(text, isWarning: true);
+
     private Pages.HomeView _homePage;
+
+    /// <summary>浮层提示。操作结果必须当场可见，不能只写日志。</summary>
+    private UI.Toast _toast;
     private Control _gameBody;
 
     /// <summary>
@@ -518,15 +543,18 @@ internal sealed class GuiForm : Form
         }
 
         Log($"[适配包] {remote.Name} 已安装：{bytes} 字节，耗时 {sw.ElapsedMilliseconds}ms");
+        ToastOk($"{remote.Name} 已安装（{bytes:N0} 字节）");
 
-        // 重新加载列表并进入该游戏
+        // 装完留在首页，不自动进游戏页。
+        //
+        // 原来装完直接 EnterGamePage，用户还没指定游戏 exe 就被丢进修改器页面，
+        // 页面上「启动游戏」可点、点了又没反应（因为找不到 exe）——
+        // 既让人困惑，也容易误以为功能坏了。
+        //
+        // 现在：留在首页，卡片变成「已安装」，用户自己决定何时进入。
+        // 进入前如果还没指定 exe，游戏页会明确提示怎么设置。
         LoadProfiles();
-        var installed = LoadInstalledAdapters();
-        var target = installed.FirstOrDefault(a =>
-            string.Equals(a.Id, remote.Id, StringComparison.OrdinalIgnoreCase));
-
-        if (target != null) EnterGamePage(target);
-        else ShowHomePage();
+        ShowHomePage();
     }
 
     /// <summary>
@@ -548,23 +576,40 @@ internal sealed class GuiForm : Form
             return;
         }
 
-        using var dlg = new OpenFileDialog
-        {
-            Title = $"选择 {adapter.Name} 的可执行文件",
-            Filter = "可执行文件 (*.exe)|*.exe|所有文件 (*.*)|*.*",
-            CheckFileExists = true,
-            Multiselect = false
-        };
+        // 文件对话框必须延后到消息队列空闲时再开。
+        //
+        // 真 bug：直接在 ToolStripMenuItem.Click 回调里同步调用 ShowDialog，
+        // 栈停在 IFileDialog.Show 上不返回，对话框窗口根本没出现，
+        // 主窗口 Enabled=False —— 表现为整个进程卡死，最后闪退。
+        // （用 dotnet-dump 抓栈确认：LocateGameExe -> CommonDialog.ShowDialog
+        //   -> FileDialog.RunDialog -> IFileDialog.Show）
+        //
+        // 右键菜单还在收尾时不能同步开模态框。BeginInvoke 让菜单先完成
+        // 关闭流程，再在干净的消息循环里开对话框。
+        BeginInvoke(new Action(() => ShowLocateDialog(adapterId, adapter)));
+    }
 
-        // 已有的路径作为初始位置
-        string existing = AdapterInstallPaths.Resolve(adapterId);
-        if (!string.IsNullOrWhiteSpace(existing) && File.Exists(existing))
-            dlg.InitialDirectory = Path.GetDirectoryName(existing);
-
-        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+    /// <summary>
+    /// 实际弹出文件选择框。由 LocateGameExe 通过 BeginInvoke 延后调用，
+    /// 避免在右键菜单回调里同步开模态框导致卡死。
+    /// </summary>
+    private void ShowLocateDialog(string adapterId, GameAdapter adapter)
+    {
+        // 不用系统文件对话框。
+        //
+        // 实测这个环境里 IFileDialog.Show 会永久阻塞：
+        // 调用栈停在 FileDialog.RunDialog -> IFileDialog.Show 不返回，
+        // 主窗口 Enabled=False，对话框窗口从未出现。
+        // 连 PowerShell 自己的 OpenFileDialog 也一样卡住，
+        // 所以不是本程序的用法问题，是环境层面 Shell 对话框不可用。
+        //
+        // 改成应用内输入面板：用户直接粘贴或输入路径。
+        // 好处是完全不依赖 Shell，坏处是不能浏览——所以提供"从剪贴板粘贴"
+        // 和"在资源管理器里定位"两个辅助。
+        string chosen = PromptForExePath(adapter);
+        if (string.IsNullOrWhiteSpace(chosen)) return;
 
         // 名字对不上要提醒，但允许继续（用户可能改了 exe 名）
-        string chosen = dlg.FileName;
         if (!string.Equals(Path.GetFileName(chosen), adapter.Exe, StringComparison.OrdinalIgnoreCase))
         {
             var r = MessageBox.Show(this,
@@ -577,6 +622,132 @@ internal sealed class GuiForm : Form
 
         AdapterInstallPaths.Set(adapterId, chosen);
         Log($"[路径] {adapter.Name} 已指定：{chosen}");
+    }
+
+    /// <summary>
+    /// 应用内输入游戏路径。
+    ///
+    /// 不用系统文件对话框：实测该环境下 IFileDialog.Show 会永久阻塞
+    /// （连 PowerShell 的 OpenFileDialog 也一样），所以完全绕开 Shell。
+    /// </summary>
+    private string PromptForExePath(GameAdapter adapter)
+    {
+        using var dlg = new Form
+        {
+            Text = $"设置游戏路径 — {adapter.Name}",
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            ClientSize = new Size(560, 200),
+            BackColor = Tokens.PageBack,
+            Font = Tokens.FontBody
+        };
+
+        var tip = new Label
+        {
+            Text = $"请输入 {adapter.Exe} 的完整路径，或从资源管理器复制后粘贴。",
+            AutoSize = false,
+            Width = 520,
+            Height = 44,
+            Left = 20,
+            Top = 16,
+            ForeColor = Tokens.TextSecondary,
+            Font = Tokens.FontCaption
+        };
+
+        var input = new TextBox
+        {
+            Left = 20,
+            Top = 66,
+            Width = 520,
+            Height = 28,
+            Font = Tokens.FontBody,
+            Text = AdapterInstallPaths.Resolve(adapter.Id) ?? "",
+            BorderStyle = BorderStyle.FixedSingle
+        };
+
+        var paste = new Button
+        {
+            Text = "从剪贴板粘贴",
+            Left = 20,
+            Top = 110,
+            Width = 130,
+            Height = 32
+        };
+        paste.Click += (_, _) =>
+        {
+            try
+            {
+                if (Clipboard.ContainsText())
+                    input.Text = Clipboard.GetText().Trim().Trim('"');
+            }
+            catch { /* 剪贴板被占用时忽略 */ }
+        };
+
+        var browse = new Button
+        {
+            Text = "在资源管理器中选择…",
+            Left = 160,
+            Top = 110,
+            Width = 160,
+            Height = 32
+        };
+        browse.Click += (_, _) =>
+        {
+            // 打开资源管理器让用户自己找，找到后复制路径回来粘贴。
+            // 不调用任何文件对话框，避开 Shell 阻塞。
+            string current = input.Text.Trim().Trim('"');
+            string dir = "";
+            try
+            {
+                if (File.Exists(current)) dir = Path.GetDirectoryName(current);
+                else if (Directory.Exists(current)) dir = current;
+            }
+            catch { }
+
+            if (string.IsNullOrEmpty(dir))
+                dir = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = $"\"{dir}\"",
+                    UseShellExecute = true
+                });
+            }
+            catch { }
+        };
+
+        var ok = new Button
+        {
+            Text = "确定",
+            Left = 380,
+            Top = 150,
+            Width = 76,
+            Height = 32,
+            DialogResult = DialogResult.OK
+        };
+
+        var cancel = new Button
+        {
+            Text = "取消",
+            Left = 464,
+            Top = 150,
+            Width = 76,
+            Height = 32,
+            DialogResult = DialogResult.Cancel
+        };
+
+        dlg.Controls.AddRange(new Control[] { tip, input, paste, browse, ok, cancel });
+        dlg.AcceptButton = ok;
+        dlg.CancelButton = cancel;
+
+        if (dlg.ShowDialog(this) != DialogResult.OK) return null;
+
+        return input.Text.Trim().Trim('"');
     }
 
     /// <summary>卸载适配包。入口保留在首页卡片上，卸载后卡片变成"可下载"。</summary>
@@ -784,7 +955,7 @@ internal sealed class GuiForm : Form
     {
         if (_adapter == null)
         {
-            Log("请先在左侧选择一个游戏适配包。");
+            ToastWarn("请先选择一个游戏");
             return;
         }
         if (_launching) { Log("启动/刷新进行中，请稍候…"); return; }
@@ -810,13 +981,24 @@ internal sealed class GuiForm : Form
             if (r.Ok && r.CdpReady)
             {
                 Log("启动成功，正在读取数值…");
+                ToastOk($"已启动 {adapter.Name}");
                 UpdateStatusForAdapter(adapter);
                 _topBar?.SetRefreshEnabled(true);
                 await RefreshValuesAsync();
             }
             else
             {
+                // 失败必须当场可见。
+                //
+                // 原来只写 Log()，而日志抽屉默认收起——
+                // 用户点了「启动游戏」什么都不发生，看不出任何原因。
+                // 这里把失败原因压成一句短的浮层提示，完整内容仍进日志。
                 Log("[失败] " + r.Message.Replace("\n", " "));
+
+                string shortMsg = r.Message.Split('\n')[0].Trim();
+                if (shortMsg.Length > 80) shortMsg = shortMsg[..80] + "…";
+
+                ToastError(shortMsg);
             }
         }
         finally

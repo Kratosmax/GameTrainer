@@ -70,7 +70,19 @@ internal sealed class AdapterInstallPaths
             var parsed = JsonSerializer.Deserialize<AdapterInstallPaths>(json);
             if (parsed == null) return _cached = new AdapterInstallPaths();
 
-            parsed.Paths ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            // JsonSerializer 反序列化时会新建 Dictionary，
+            // 属性初始化器里的 OrdinalIgnoreCase 比较器不会被保留。
+            // 结果：写进去时是忽略大小写的字典，读回来变成区分大小写，
+            // 适配包 id 大小写一变就查不到路径（实测踩到）。
+            // 这里必须显式重建字典并带上比较器。
+            var normalized = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (parsed.Paths != null)
+            {
+                foreach (var kv in parsed.Paths)
+                    normalized[kv.Key] = kv.Value;
+            }
+            parsed.Paths = normalized;
+
             return _cached = parsed;
         }
         catch

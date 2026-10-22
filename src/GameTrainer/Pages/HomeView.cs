@@ -30,6 +30,13 @@ internal sealed class HomeView : Control
         public Image Icon;          // null 时用首字占位
         public Color Tint;
         public AdapterRepository.RemoteAdapter Remote;   // 未安装时的下载源
+
+        /// <summary>
+        /// 小写搜索键，加载时算一次。
+        /// 不在每次按键时对每个卡片做 ToLower——那会在输入过程中
+        /// 反复分配字符串，卡片一多就明显卡顿。
+        /// </summary>
+        public string SearchKey = "";
         public GameAdapter Adapter;                       // 已安装时的适配包
 
         // 运行时状态（每帧更新）
@@ -44,6 +51,24 @@ internal sealed class HomeView : Control
     private int _hover = -1;
     private int _press = -1;
     private float _scrollY;            // 滚动偏移（用于超出一屏时）
+
+    /// <summary>上一次绘制时的内容总高度。滚动上限靠它算。</summary>
+    private int _contentH;
+
+    /// <summary>搜索词（已转小写）。空串表示不过滤。</summary>
+    private string _query = "";
+
+    /// <summary>
+    /// 过滤结果缓存。只有 _query 或 _items 变化时才重算，
+    /// 绘制与滚动时直接复用，避免每帧都跑一遍过滤。
+    /// </summary>
+    private List<Item> _filtered = new();
+
+    /// <summary>过滤结果是否还有效。</summary>
+    private bool _filterDirty = true;
+
+    /// <summary>搜索输入框。作为真实子控件存在，才能接收键盘与输入法。</summary>
+    private TextBox _searchBox;
     private float _scrollTarget;
     private string _remoteError;
 
@@ -64,7 +89,36 @@ internal sealed class HomeView : Control
                  ControlStyles.UserPaint |
                  ControlStyles.ResizeRedraw, true);
         BackColor = Tokens.PageBack;
-    }
+    
+        // 搜索框用原生 TextBox，自绘的拿不到输入法、也没法选中文字。
+        // 放在头部右上角，宽度固定，不随卡片列数变化。
+        _searchBox = new TextBox
+        {
+            Font = Tokens.FontBody,
+            BorderStyle = BorderStyle.None,
+            BackColor = Tokens.Surface,
+            ForeColor = Tokens.TextPrimary,
+            Width = 220,
+            Height = 26,
+            PlaceholderText = "搜索游戏名…"
+        };
+
+        _searchBox.TextChanged += (_, _) => SetQuery(_searchBox.Text);
+        _searchBox.KeyDown += (_, e) =>
+        {
+            // Esc 清空搜索
+            if (e.KeyCode == Keys.Escape)
+            {
+                _searchBox.Text = "";
+                e.SuppressKeyPress = true;
+            }
+        };
+
+        Controls.Add(_searchBox);
+
+        // 尺寸变化时把搜索框贴到右上角
+        Resize += (_, _) => LayoutSearchBox();
+}
 
     // ---------- 数据填充 ----------
 
@@ -92,7 +146,8 @@ internal sealed class HomeView : Control
                 Installed = true,
                 Icon = TryLoadIcon(a),
                 Tint = TintFor(a.Id),
-                Adapter = a
+                Adapter = a,
+                SearchKey = (a.Name + " " + a.Id + " " + a.Engine).ToLowerInvariant()
             });
         }
 
@@ -108,12 +163,59 @@ internal sealed class HomeView : Control
                     Sub = "未安装 · 点击下载",
                     Installed = false,
                     Tint = TintFor(r.Id),
-                    Remote = r
+                    Remote = r,
+                    SearchKey = ((string.IsNullOrWhiteSpace(r.Name) ? r.Id : r.Name)
+                        + " " + r.Id).ToLowerInvariant()
                 });
             }
         }
 
+        _filterDirty = true;
         PlayEnter();
+    }
+
+    /// <summary>
+    /// 设置搜索词。空串表示不过滤。
+    ///
+    /// 性能：只在词变化时把结果重算一次并缓存。
+    /// 逐键过滤的成本是 O(n) 次子串匹配，n 是卡片数（几十个量级），
+    /// 不做 ToLower 就不会有额外分配，逐键完全够用。
+    /// 真正的风险是每帧绘制时重复过滤——所以缓存必须留在绘制路径之外。
+    /// </summary>
+    public void SetQuery(string query)
+    {
+        string q = (query ?? "").Trim().ToLowerInvariant();
+        if (q == _query) return;
+
+        _query = q;
+        _filterDirty = true;
+        _scrollY = 0;
+        _scrollTarget = 0;
+        Invalidate();
+    }
+
+    /// <summary>当前可见的卡片（过滤后）。结果缓存，脏了才重算。</summary>
+    private List<Item> FilteredItems()
+    {
+        if (!_filterDirty && _filtered != null) return _filtered;
+
+        if (_query.Length == 0)
+        {
+            _filtered = _items;
+        }
+        else
+        {
+            var list = new List<Item>(_items.Count);
+            foreach (var it in _items)
+            {
+                if (it.SearchKey.Contains(_query, StringComparison.Ordinal))
+                    list.Add(it);
+            }
+            _filtered = list;
+        }
+
+        _filterDirty = false;
+        return _filtered;
     }
 
     /// <summary>
@@ -248,7 +350,16 @@ internal sealed class HomeView : Control
         int y = pad;
 
         y = PaintHeader(g, pad, y);
-        y = PaintSection(g, pad, y, "已安装", _items.Count(x => x.Installed));
+
+        // 过滤结果在这里算一次，供分区计数与卡片绘制共用。
+        var visible = FilteredItems();
+        var visibleInstalled = visible.Where(x => x.Installed).ToList();
+        var downloadable = visible.Where(x => !x.Installed).ToList();
+
+        // 计数必须用过滤后的数量。
+        // 原来用 _items.Count(x => x.Installed)，搜索时标题写"已安装 (2)"
+        // 下面却一张卡都没有，自相矛盾。
+        y = PaintSection(g, pad, y, "已安装", visibleInstalled.Count);
 
         // 卡片网格：列数按可用宽度自适应，卡片宽度等分填满。
         //
@@ -277,15 +388,12 @@ internal sealed class HomeView : Control
         // 结果第一张卡被放到第二行的第 N 列，左边空着——
         // 用户看到的就是"第二行左边没东西，内容跑到右边"。
         int installedCount = 0;
-        foreach (var it in _items.Where(x => x.Installed))
+        foreach (var it in visibleInstalled)
         {
             LayoutAndPaint(g, it, installedCount++, pad, rowY, cardH, gap, cols);
             if (installedCount % cols == 0) rowY += cardH + gap;
         }
         if (installedCount % cols != 0) rowY += cardH + gap;
-
-        // 可下载分区：索引从 0 重新开始，保证从第一列排起
-        var downloadable = _items.Where(x => !x.Installed).ToList();
         if (downloadable.Count > 0)
         {
             rowY = PaintSection(g, pad, rowY, "可下载", downloadable.Count, ignoreScroll: true);
@@ -302,9 +410,16 @@ internal sealed class HomeView : Control
             PaintHint(g, pad, rowY, "无法获取下载列表：" + _remoteError);
         }
 
-        // 空状态
+        // 记录内容总高度，供滚动上限使用。
+        // 这里 rowY 是最后一个内容块之后的位置（已含滚动偏移的抵消）。
+        _contentH = rowY + (int)_scrollY;
+
+        // 空状态。要区分"一个游戏都没有"和"搜索没匹配到"——
+        // 后者提示"换个词试试"比"还没有任何游戏"有用得多。
         if (_items.Count == 0)
             PaintEmpty(g);
+        else if (visible.Count == 0)
+            PaintNoMatch(g);
     }
 
     /// <summary>标题 + 副标题 + 右侧主按钮。返回下一个可用 y。</summary>
@@ -332,12 +447,45 @@ internal sealed class HomeView : Control
             string summary = available > 0
                 ? $"已安装 {installed} · 可下载 {available}"
                 : $"已安装 {installed}";
+            // 数量概览放在搜索框下面一行，避免两者重叠。
             Draw.TextRight(g, summary, Tokens.FontCaption,
                 Easing.WithAlpha(Tokens.TextMuted, t),
-                new Rectangle(Width - pad - 260, y + 14 + dy, 260, 24));
+                new Rectangle(Width - pad - 260, y + 40 + dy, 260, 22));
         }
 
         return y + 76;
+    }
+
+    /// <summary>
+    /// 把搜索框贴到头部右上角。
+    ///
+    /// 放在"数量概览"上方一行，避免和它抢同一块位置。
+    /// 卡片区从 y=76 开始，搜索框底边不超过这条线。
+    /// </summary>
+    private void LayoutSearchBox()
+    {
+        if (_searchBox == null) return;
+
+        const int pad = 28;
+        int x = Math.Max(pad, Width - pad - _searchBox.Width - 12);
+
+        // 与"游戏库"标题同一行（y=8..34），不压住下面的数量概览。
+        _searchBox.Location = new Point(x, 10);
+    }
+
+    /// <summary>搜索无匹配时的提示。</summary>
+    private void PaintNoMatch(Graphics g)
+    {
+        float t = Easing.EaseOut(Math.Clamp(_pageT * 3f, 0f, 1f));
+
+        string msg = $"没有匹配「{_query}」的游戏";
+        Draw.TextCenter(g, msg, Tokens.FontSection,
+            Easing.WithAlpha(Tokens.TextSecondary, t),
+            new Rectangle(0, Height / 2 - 40, Width, 32));
+
+        Draw.TextCenter(g, "换个关键词试试，或清空搜索框。", Tokens.FontBody,
+            Easing.WithAlpha(Tokens.TextMuted, t),
+            new Rectangle(0, Height / 2 - 2, Width, 26));
     }
 
     private int PaintSection(Graphics g, int pad, int y, string title, int count,
@@ -573,7 +721,15 @@ internal sealed class HomeView : Control
     {
         base.OnMouseWheel(e);
 
-        _scrollTarget = Math.Max(0, _scrollTarget - e.Delta);
+        // 滚动必须有上限。
+        //
+        // 真 bug：原来只 Math.Max(0, ...) 夹了下界，没有上界，
+        // 一直往下滚能把内容整个推出可视区——用户看到的就是"卡片上天了"，
+        // 剩下一片空白，而且滚不回来（因为没有参照物）。
+        //
+        // 上限 = 内容总高 - 可视高度。内容不足一屏时上限为 0，完全不能滚。
+        int maxScroll = Math.Max(0, _contentH - ClientSize.Height);
+        _scrollTarget = Math.Clamp(_scrollTarget - e.Delta, 0, maxScroll);
         float from = _scrollY;
 
         Animator.Run(this, "scroll", Tokens.AnimFast, raw =>
