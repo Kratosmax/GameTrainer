@@ -43,6 +43,26 @@ internal static class Program
         catch { /* 没有控制台时忽略 */ }
     }
 
+    /// <summary>
+    /// 入口。
+    ///
+    /// [STAThread] 不能省 ——— 这是之前文件对话框卡死的真正原因。
+    ///
+    /// Shell 的 IFileDialog 是 COM 组件，必须在 STA（单线程套间）里调用。
+    /// 没有这个特性时主线程默认进入 MTA，IFileDialog.Show() 会永久阻塞：
+    /// 栈停在 Show 不返回，对话框窗口从不出现，主窗口被置 Enabled=False，
+    /// 表现为「点一下就卡死然后闪退」。
+    ///
+    /// 排查时走过弯路：先后试过 BeginInvoke 延后调用、改用原生 COM 接口、
+    /// 关掉 FreeConsole、切 WinExe —— 全都无效，因为根因在套间模型，
+    /// 不在调用方式。连 PowerShell 自己的 OpenFileDialog 也一样卡，
+    /// 那是同一个原因（PowerShell 的 -Command 线程也是 MTA）。
+    ///
+    /// 补上这个特性后，WinForms 的原生 OpenFileDialog 恢复正常，
+    /// 就能用系统选择器（快速访问、固定、网络位置、搜索等全都自带），
+    /// 不必自己实现一个残缺的浏览器。
+    /// </summary>
+    [STAThread]
     private static int Main(string[] args)
     {
         if (args.Length == 0) DetachConsole();

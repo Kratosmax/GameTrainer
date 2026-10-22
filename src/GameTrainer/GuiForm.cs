@@ -627,31 +627,50 @@ internal sealed class GuiForm : Form
     /// <summary>
     /// 让用户选择游戏的可执行文件。
     ///
-    /// 用应用内文件浏览器，不用系统文件对话框（实测该环境下
-    /// IFileDialog.Show 会永久阻塞）。也不用「打开资源管理器让用户自己找」——
-    /// 那个做法是骗人的：用户在资源管理器里双击 exe 会直接启动游戏，
-    /// 而不是把路径带回来。
+    /// 用 Windows 原生文件选择器。之前它在 MTA 线程上会永久阻塞，
+    /// 补上 Main 的 [STAThread] 后已恢复正常（见 Program.Main 注释）。
     ///
-    /// 浏览器的行为约定：双击目录进入、双击 exe 只选中、点确定才返回。
+    /// 用原生选择器而不是自己实现浏览器的理由：
+    /// 系统对话框自带快速访问、固定文件夹、网络位置、搜索、
+    /// 地址栏跳转、最近使用等能力，自己实现一个只会得到一个残缺版本。
     /// </summary>
     private string PromptForExePath(GameAdapter adapter)
     {
-        string startDir = "";
+        using var dlg = new OpenFileDialog
+        {
+            Title = $"选择 {adapter.Name} 的可执行文件",
+            Filter = "可执行文件 (*.exe)|*.exe|所有文件 (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false,
+            // 允许用户自己输入完整路径，也允许从快速访问/网络位置选
+            ValidateNames = true,
+            RestoreDirectory = true,
+            AutoUpgradeEnabled = true
+        };
+
+        // 已有路径作为初始位置；没有就从"此电脑"开始，
+        // 用户可以直接点任意盘符或快速访问，不会被锁在某一个盘。
         string existing = AdapterInstallPaths.Resolve(adapter.Id);
         if (!string.IsNullOrWhiteSpace(existing))
         {
             try
             {
-                if (File.Exists(existing)) startDir = Path.GetDirectoryName(existing);
-                else if (Directory.Exists(existing)) startDir = existing;
+                if (File.Exists(existing))
+                {
+                    dlg.InitialDirectory = Path.GetDirectoryName(existing);
+                    dlg.FileName = Path.GetFileName(existing);
+                }
+                else if (Directory.Exists(existing))
+                {
+                    dlg.InitialDirectory = existing;
+                }
             }
             catch { }
         }
 
-        using var dlg = new UI.FileBrowserDialog(
-            $"选择 {adapter.Name} 的可执行文件", startDir, adapter.Exe);
+        if (dlg.ShowDialog(this) != DialogResult.OK) return null;
 
-        return dlg.ShowDialog(this) == DialogResult.OK ? dlg.SelectedPath : null;
+        return dlg.FileName;
     }
 
     /// <summary>卸载适配包。入口保留在首页卡片上，卸载后卡片变成"可下载"。</summary>
