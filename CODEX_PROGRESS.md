@@ -977,3 +977,51 @@ overlap  = False                        // 不再重叠
 - `dotnet build`：0 错误 0 警告
 - `dotnet test`：251 通过 0 失败
 - UiShot：16 张截图全部正常
+---
+
+## 目标四维度验收（2026-10-22 第三轮末）
+
+### (A) 架构拆分 ✓
+
+| 模块 | 行数 | 职责 |
+|---|---|---|
+| Services/GameSession.cs | 304 | 单一状态源 |
+| Services/HotkeyService.cs | 134 | 热键注册与触发 |
+| Shell/TopBar.cs | 189 | 顶栏 |
+| Shell/StatusBar.cs | 123 | 状态栏 |
+| Pages/HomeView.cs | 555 | 游戏库页（自绘） |
+| Pages/GameView.cs | 680 | 游戏修改页（自绘） |
+
+`GuiForm.cs`：**2046 → 1445 行**（-601）
+
+### (B) 代码去重 ✓
+
+| 项 | 结果 |
+|---|---|
+| 圆角路径实现 | 仅 Draw.cs 1 处（原 6 处） |
+| 缓动/插值实现 | 仅 Easing.cs 1 处（原分散） |
+| 设计令牌裸写颜色 | 0 处 |
+
+### (C) 9 项 GUI 问题 ✓
+
+全部核对通过：去侧栏 / 单一状态胶囊 / 只认 adapters / 中性空状态 /
+状态栏正确恢复 / 姓名表动态定位 / 更新说明非空 / 过渡动画 / 自绘单控件。
+
+**本轮补完第 3 项**：核对时发现 profile 路径界面已不展示但代码仍在跑。
+删除 `BuildSidebar`（从未挂载的死代码）、`LoadLegacyProfiles`、
+`OnProfileSelected`（零调用点）、`BuildPatchRows`/`DescribePatch`/
+`OnToggle`/`ToggleAll`/`DoRevertAll`（整条 profile 修改路径）、
+`CollectionDisplayName`，以及托盘菜单里 profile 专用的三项。
+
+### (D) 动画架构 ✓
+
+- 统一帧驱动：Animator.cs 单定时器（16ms），GuiForm 里那 1 个 Timer 是
+  更新检查延时启动，不是动画驱动
+- 自绘单控件：HomeView / GameView 都是 OnPaint 全自绘
+- 性能关键：阴影只在动画结束后绘制（`if (t >= 0.99f)`）
+
+### 验证
+
+- `dotnet build`：0 错误 0 警告
+- `dotnet test`：251 通过 0 失败
+- 真实启动：界面完好，卡片撑满，状态栏正确
